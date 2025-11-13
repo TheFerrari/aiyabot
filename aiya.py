@@ -8,7 +8,7 @@ from core import settings
 from core.logging_setup import get_logger
 from dotenv import load_dotenv
 from core.queuehandler import GlobalQueue
-from core.civitaiposter import forget_civitai_session
+#from core.civitaiposter import forget_civitai_session
 #from core.mask_server import MaskEditorServer
 
 
@@ -39,7 +39,6 @@ bot.load_extension('core.upscalecog')
 bot.load_extension('core.identifycog')
 bot.load_extension('core.infocog')
 bot.load_extension('core.leaderboardcog')
-#bot.load_extension('core.deforumcog')
 
 use_generate = os.getenv("USE_GENERATE", 'True')
 enable_generate = use_generate.lower() in ('true', '1', 't')
@@ -50,18 +49,6 @@ else:
     print(f"/generate command is DISABLED due to USE_GENERATE={use_generate}")
 
 bot.load_extension('core.chatbotcog')
-
-@bot.command(name="logoffcivitai")
-async def logoffcivitai(ctx):
-    """Supprime la session Civitai locale (profil Chrome)."""
-    try:
-        result = forget_civitai_session()
-        if result:
-            await ctx.send("✅ Civitai session forgotten. You will need to log in again for the next post.")
-        else:
-            await ctx.send("❌ Failed to forget Civitai session. Profile not found or error.")
-    except Exception as e:
-        await ctx.send(f"❌ Error while removing session: {e}")
 
 # Stats slash command
 @bot.slash_command(name='stats', description='How many images have I generated?')
