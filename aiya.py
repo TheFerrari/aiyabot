@@ -5,7 +5,7 @@ import sys
 from discord.ext import commands
 from core import ctxmenuhandler
 from core import settings
-from core.mylogging import get_logger
+from core.logging_setup import get_logger
 from dotenv import load_dotenv
 from core.queuehandler import GlobalQueue
 from core.civitaiposter import forget_civitai_session
@@ -24,8 +24,13 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 bot.logger = get_logger(__name__)
 
 # Startup checks
-settings.startup_check()
-settings.files_check()
+try:
+    settings.startup_check()
+    settings.files_check()
+    print("✅ Inicialización completada exitosamente")
+except Exception as e:
+    print(f"⚠️  Advertencia durante la inicialización: {e}")
+    print("El bot continuará ejecutándose, pero algunas funciones pueden no estar disponibles.")
 
 # Load extensions
 bot.load_extension('core.settingscog')

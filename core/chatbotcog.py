@@ -71,15 +71,15 @@ class LlamaChatCog(commands.Cog):
         try:
             if self.backend == "llama_cpp":
                 import llama_cpp
-                model_dir = os.path.join("core", "Meta-Llama-3-8B-Instruct")
-                model_path = os.path.join(model_dir, "Meta-Llama-3-8B-Instruct.Q4_0.gguf")
+                model_dir = os.path.join("core", "Llama-3.2-11B-Vision-Instruct-gguf")
+                model_path = os.path.join(model_dir, "Llama-3.2-11B-Vision-Instruct.Q4_K_M.gguf")
                 self.n_ctx = 8192
                 self.model = llama_cpp.Llama(model_path=model_path, n_ctx=self.n_ctx, n_gpu_layers=35)
                 print("llama_cpp backend loaded")
             elif self.backend == "transformers":
                 from transformers import AutoTokenizer, AutoModelForCausalLM
                 import torch
-                model_name = "meta-llama/Meta-Llama-3-8B-Instruct"
+                model_name = "meta-llama/Llama-3.2-11B-Vision-Instruct.Q4_K_M"
                 self.tokenizer = AutoTokenizer.from_pretrained(model_name)
                 self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
                 self.n_ctx = self.model.config.max_position_embeddings

@@ -73,7 +73,7 @@ async def parse_image_info(ctx, image_url, command):
         if command == 'button' and ctx is not None:
             has_init_url = True
 
-        distilled_cfg_scale = settings.read(str(ctx.channel.id))['distilled_cfg_scale']
+        distilled_cfg_scale = settings.read(str(ctx.channel.id)).get('distilled_cfg_scale', '3.5')
 
         # try to find extra networks
         hypernet, lora = extra_net_search(prompt_field)

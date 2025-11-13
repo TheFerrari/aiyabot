@@ -46,14 +46,15 @@ batch_buttons = "True"
 restrict_buttons = "False"
 
 # The maximum value allowed for width/height (keep as multiple of 8)
-max_size = 832
+max_size = 2048
 
 # The resize amount when using context menu Quick Upscale
 quick_upscale_resize = 2.0
 
 # AIYA won't generate if prompt has any words in the ban list
 # Separate with commas; example, ["a", "b", "c"]
-prompt_ban_list = ["Porn", "NSFW", "Hentai", "Pussy", "Fuck", "Bitch", "Slut", "Whore", "Cunt", "BDSM", "Fap", "Masturbate", "Blowjob", "Handjob", "MILF", "Threesome", "Gangbang", "Orgy", "Deepthroat", "Sissy", "Shemale", "Swingers", "Pornstar", "Upskirt", "Downblouse", "Erotica", "Dildo", "Vibrator", "Butt plug", "Hardcore", "Softcore", "Sexting", "Cybersex", "Footjob", "Rimjob", "Bukkake", "Swallow", "Creampie", "Bondage", "Domination", "Submission", "Sadism", "Masochism", "Spanking", "Fetish", "Nipples", "Pubic", "Vagina", "Scrotum", "Testicles", "Prostate", "Ejaculation", "Orgasm", "Climax", "Squirt", "Erection", "Kinky", "Upskirt", "Glory hole", "Strapon", "Sadomasochism", "Pegging", "Fisting", "Tribbing", "Scissoring"]
+prompt_ban_list = [] 
+#["Porn", "NSFW", "Hentai", "Pussy", "Fuck", "Bitch", "Slut", "Whore", "Cunt", "BDSM", "Fap", "Masturbate", "Blowjob", "Handjob", "MILF", "Threesome", "Gangbang", "Orgy", "Deepthroat", "Sissy", "Shemale", "Swingers", "Pornstar", "Upskirt", "Downblouse", "Erotica", "Dildo", "Vibrator", "Butt plug", "Hardcore", "Softcore", "Sexting", "Cybersex", "Footjob", "Rimjob", "Bukkake", "Swallow", "Creampie", "Bondage", "Domination", "Submission", "Sadism", "Masochism", "Spanking", "Fetish", "Nipples", "Pubic", "Vagina", "Scrotum", "Testicles", "Prostate", "Ejaculation", "Orgasm", "Climax", "Squirt", "Erection", "Kinky", "Upskirt", "Glory hole", "Strapon", "Sadomasochism", "Pegging", "Fisting", "Tribbing", "Scissoring"]
 # These words will be automatically removed from the prompt
 prompt_ignore_list = []
 # Choose whether or not ignored words are displayed to user
@@ -108,8 +109,8 @@ class GlobalVar:
     api_user: Optional[str] = None
     api_pass: Optional[str] = None
     model_info = {}
-    size_range = range(192, 1088, 8)
-    size_range_exceed = None
+    size_range = range(192, 2048, 1)
+    size_range_exceed = 2048
     sampler_names = []
     scheduler_names = []
     style_names = {}
@@ -377,22 +378,35 @@ def authenticate_user():
     if global_var.api_auth:
         s.auth = (global_var.api_user, global_var.api_pass)
 
-    # do a check to see if --gradio-auth is set
-    if global_var.gradio_auth is None:
-        r = s.get(global_var.url + '/sdapi/v1/cmd-flags')
-        if r.status_code == 401:
-            global_var.gradio_auth = True
-        else:
-            global_var.gradio_auth = False
+    try:
+        # do a check to see if --gradio-auth is set
+        if global_var.gradio_auth is None:
+            r = s.get(global_var.url + '/sdapi/v1/cmd-flags', timeout=10)
+            if r.status_code == 401:
+                global_var.gradio_auth = True
+            else:
+                global_var.gradio_auth = False
 
-    if global_var.gradio_auth:
-        login_payload = {
-            'username': global_var.username,
-            'password': global_var.password
-        }
-        s.post(global_var.url + '/login', data=login_payload)
-    else:
-        s.post(global_var.url + '/login')
+        if global_var.gradio_auth:
+            login_payload = {
+                'username': global_var.username,
+                'password': global_var.password
+            }
+            s.post(global_var.url + '/login', data=login_payload, timeout=10)
+        else:
+            s.post(global_var.url + '/login', timeout=10)
+    except requests.exceptions.ConnectionError as e:
+        print(f"Error de conexión al intentar autenticarse con {global_var.url}: {e}")
+        print("Asegúrate de que la Web UI de Stable Diffusion esté ejecutándose en la URL configurada.")
+        return None
+    except requests.exceptions.Timeout as e:
+        print(f"Timeout al intentar autenticarse con {global_var.url}: {e}")
+        print("La Web UI de Stable Diffusion no responde. Verifica que esté ejecutándose.")
+        return None
+    except Exception as e:
+        print(f"Error inesperado durante la autenticación: {e}")
+        return None
+    
     return s
 
 
@@ -582,34 +596,57 @@ def populate_global_vars():
     global_var.negative_prompt_prefix = [x for x in config['negative_prompt_prefix']]
     global_var.prompt_prefix = [x for x in config['prompt_prefix']]
     # slash command doesn't update this dynamically. Changes to size need a restart.
-    global_var.size_range = range(192, config['max_size'] + 8, 8)
+    global_var.size_range = range(192, config['max_size'], 2)
     if len(global_var.size_range) > 25:
         global_var.size_range_exceed = [x for x in global_var.size_range]
         global_var.size_range = []
 
     # create persistent session since we'll need to do a few API calls
     s = authenticate_user()
+    
+    if s is None:
+        print("No se pudo autenticar con la Web UI. Algunas funciones pueden no estar disponibles.")
+        print("Para usar todas las funciones, asegúrate de que la Web UI de Stable Diffusion esté ejecutándose.")
+        return
 
     # load many values from Web UI into global variables
-    r1 = s.get(global_var.url + "/sdapi/v1/samplers")
-    r2 = s.get(global_var.url + "/sdapi/v1/prompt-styles")
-    #r3 = s.get(global_var.url + "/sdapi/v1/face-restorers")
-    #r4 = s.get(global_var.url + "/sdapi/v1/embeddings")
-    r5 = s.get(global_var.url + "/sdapi/v1/hypernetworks")
-    r6 = s.get(global_var.url + "/sdapi/v1/upscalers")
-    r7 = s.get(global_var.url + "/sdapi/v1/schedulers")
-    r = s.get(global_var.url + "/sdapi/v1/sd-models")
-    for s1 in r1.json():
-        try:
-            global_var.sampler_names.append(s1['name'])
-        except(Exception,):
-            # throw in last exception error for anything that wasn't caught earlier
-            print("Can't connect to API for some reason!"
-                  "Please check your .env URL or credentials.")
-            os.system("pause")
+    try:
+        r1 = s.get(global_var.url + "/sdapi/v1/samplers", timeout=10)
+        r2 = s.get(global_var.url + "/sdapi/v1/prompt-styles", timeout=10)
+        #r3 = s.get(global_var.url + "/sdapi/v1/face-restorers")
+        #r4 = s.get(global_var.url + "/sdapi/v1/embeddings")
+        r5 = s.get(global_var.url + "/sdapi/v1/hypernetworks", timeout=10)
+        r6 = s.get(global_var.url + "/sdapi/v1/upscalers", timeout=10)
+        r7 = s.get(global_var.url + "/sdapi/v1/schedulers", timeout=10)
+        r = s.get(global_var.url + "/sdapi/v1/sd-models", timeout=10)
+    except requests.exceptions.ConnectionError as e:
+        print(f"Error de conexión al cargar datos de la Web UI: {e}")
+        print("Algunas funciones pueden no estar disponibles.")
+        return
+    except requests.exceptions.Timeout as e:
+        print(f"Timeout al cargar datos de la Web UI: {e}")
+        print("Algunas funciones pueden no estar disponibles.")
+        return
+    except Exception as e:
+        print(f"Error inesperado al cargar datos de la Web UI: {e}")
+        print("Algunas funciones pueden no estar disponibles.")
+        return
+    try:
+        for s1 in r1.json():
+            try:
+                global_var.sampler_names.append(s1['name'])
+            except(Exception,):
+                pass
+    except Exception as e:
+        print(f"Error al procesar samplers: {e}")
+    
     global_var.style_names['None'] = ''
-    for s2 in r2.json():
-        global_var.style_names[s2['name']] = s2['prompt'], s2['negative_prompt']
+    try:
+        for s2 in r2.json():
+            global_var.style_names[s2['name']] = s2['prompt'], s2['negative_prompt']
+    except Exception as e:
+        print(f"Error al procesar estilos: {e}")
+    
     #for s4, shape in r4.json()['loaded'].items():
     #    if shape['shape'] == 768:
     #        global_var.embeddings_1.append(s4)
@@ -620,12 +657,24 @@ def populate_global_vars():
     #        global_var.embeddings_1.append(s4)
     #    if shape['shape'] == 1024:
     #        global_var.embeddings_2.append(s4)
-    for s5 in r5.json():
-        global_var.hyper_names.append(s5['name'])
-    for s6 in r6.json():
-        global_var.upscaler_names.append(s6['name'])
-    for s7 in r7.json():
-        global_var.scheduler_names.append(s7['name'])
+    
+    try:
+        for s5 in r5.json():
+            global_var.hyper_names.append(s5['name'])
+    except Exception as e:
+        print(f"Error al procesar hypernetworks: {e}")
+    
+    try:
+        for s6 in r6.json():
+            global_var.upscaler_names.append(s6['name'])
+    except Exception as e:
+        print(f"Error al procesar upscalers: {e}")
+    
+    try:
+        for s7 in r7.json():
+            global_var.scheduler_names.append(s7['name'])
+    except Exception as e:
+        print(f"Error al procesar schedulers: {e}")
     if 'SwinIR_4x' in global_var.upscaler_names:
         template['upscaler_1'] = 'SwinIR_4x'
 
@@ -635,23 +684,30 @@ def populate_global_vars():
     # model_info[1][1] = name of the model
     # model_info[1][2] = shorthash
     # model_info[1][3] = activator token
-    with open(f'{path}models.csv', encoding='utf-8') as csv_file:
-        model_data = list(csv.reader(csv_file, delimiter='|'))
-        for row in model_data[1:]:
-            for model in r.json():
-                norm_csv_path = os.path.normpath(row[1])
-                norm_api_path = os.path.normpath(model['filename'])
-                if norm_csv_path.split(os.sep)[-1] == norm_api_path.split(os.sep)[-1] \
-                        or norm_csv_path.replace(os.sep, '_') == model['model_name']:
-                    global_var.model_info[row[0]] = model['title'], model['model_name'], model['hash'], row[2]
-                    break
-    # add "Default" if models.csv is on default, or if no model matches are found
-    if not global_var.model_info:
-        global_var.model_info[row[0]] = '', '', '', ''
+    try:
+        with open(f'{path}models.csv', encoding='utf-8') as csv_file:
+            model_data = list(csv.reader(csv_file, delimiter='|'))
+            for row in model_data[1:]:
+                for model in r.json():
+                    norm_csv_path = os.path.normpath(row[1])
+                    norm_api_path = os.path.normpath(model['filename'])
+                    if norm_csv_path.split(os.sep)[-1] == norm_api_path.split(os.sep)[-1] \
+                            or norm_csv_path.replace(os.sep, '_') == model['model_name']:
+                        global_var.model_info[row[0]] = model['title'], model['model_name'], model['hash'], row[2]
+                        break
+        # add "Default" if models.csv is on default, or if no model matches are found
+        if not global_var.model_info:
+            global_var.model_info[row[0]] = '', '', '', ''
+    except Exception as e:
+        print(f"Error al procesar modelos: {e}")
 
     # iterate through config for anything unobtainable from API
-    config_url = s.get(global_var.url + "/config")
-    old_config = config_url.json()
+    try:
+        config_url = s.get(global_var.url + "/config", timeout=10)
+        old_config = config_url.json()
+    except Exception as e:
+        print(f"Error al obtener configuración de la Web UI: {e}")
+        old_config = {'components': []}
     try:
         for c in old_config['components']:
             try:

@@ -168,6 +168,7 @@ class SettingsCog(commands.Cog):
         required=False,
         autocomplete=discord.utils.basic_autocomplete(sampler_autocomplete),
     )
+
     @option(
         'scheduler',
         str,
@@ -240,6 +241,13 @@ class SettingsCog(commands.Cog):
         description='Use to update global lists (models, styles, embeddings, etc.)',
         required=False,
     )
+    @option(
+        'live_preview',
+        bool,
+        description='Enable/Disable live previews in this channel',
+        required=False,
+    )
+
     async def settings_handler(self, ctx,
                                current_settings: Optional[bool] = True,
                                prompt_prefix: Optional[str] = None,
@@ -252,6 +260,7 @@ class SettingsCog(commands.Cog):
                                sampler: Optional[str] = None,
                                scheduler: Optional[str] = None,
                                styles: Optional[str] = None,
+
                                hypernet: Optional[str] = None,
                                lora: Optional[str] = None,
                                highres_fix: Optional[str] = None,
@@ -260,11 +269,12 @@ class SettingsCog(commands.Cog):
                                batch: Optional[str] = None,
                                max_batch: Optional[str] = None,
                                upscaler_1: Optional[str] = None,
+                               live_preview: Optional[bool] = None,
                                refresh: Optional[bool] = False):
         # Check if the user has the 'Moderator' role
-        if not any(role.name == 'Moderator' for role in ctx.author.roles):
-            await ctx.send_response('Sorry, you need the "Moderator" Role to use the settings command (:', ephemeral=True)
-            return
+        #if not any(role.name == 'Moderator' for role in ctx.author.roles):
+        #    await ctx.send_response('Sorry, you need the "Moderator" Role to use the settings command (:', ephemeral=True)
+        #    return
             
         # get the channel id and check if a settings file exists
         channel = '% s' % ctx.channel.id
@@ -382,6 +392,12 @@ class SettingsCog(commands.Cog):
         if clip_skip is not None:
             settings.update(channel, 'clip_skip', clip_skip)
             new += f'\nCLIP skip: ``{clip_skip}``'
+            set_new = True
+
+
+        if live_preview is not None:
+            settings.update(channel, 'live_preview', live_preview)
+            new += f'\nLive Preview: ``"{live_preview}"``'
             set_new = True
 
         if hypernet is not None:

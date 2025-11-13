@@ -71,7 +71,8 @@ def serialize_input_tuple(input_tuple):
         #'poseref': input_tuple[20],
         #'ipadapter': input_tuple[21],
         'scheduler': input_tuple[20],
-        'distilled_cfg_scale': input_tuple[21]
+        'distilled_cfg_scale': input_tuple[21],
+
     }
 
 def deserialize_input_tuple(data):
@@ -79,9 +80,13 @@ def deserialize_input_tuple(data):
     class FakeAuthor:
         def __init__(self, id):
             self.id = id
+    class FakeChannel:
+        def __init__(self, channel_id):
+            self.id = channel_id
     class FakeCtx:
-        def __init__(self, author_id):
+        def __init__(self, author_id, channel_id=None):
             self.author = FakeAuthor(author_id)
+            self.channel = FakeChannel(channel_id) if channel_id else None
     ctx = FakeCtx(data['author_id'])
     return (
         ctx,
@@ -201,6 +206,7 @@ class DrawModal(Modal):
                 net_multi = re.search(f'<lora:{re.escape(pen[17])}:(.*?)>', pen[2]).group(1)
 
         if settings.global_var.size_range:
+
             max_size = settings.global_var.size_range
         else:
             max_size = settings.global_var.size_range_exceed
@@ -607,7 +613,24 @@ class DrawView(View):
             attachment = self.message.attachments[0]
             if self.input_tuple[12]:
                 init_url = self.input_tuple[12].url
-            embed = await ctxmenuhandler.parse_image_info(init_url, attachment.url, "button")
+            
+            # Create a fake context for parse_image_info when dealing with deserialized input_tuple
+            if hasattr(self.input_tuple[0], 'channel') and self.input_tuple[0].channel is not None:
+                ctx = self.input_tuple[0]
+            else:
+                # Create a minimal fake context for deserialized tuples
+                class FakeChannel:
+                    def __init__(self, channel_id):
+                        self.id = channel_id
+                
+                class FakeCtx:
+                    def __init__(self, channel_id):
+                        self.channel = FakeChannel(channel_id)
+                
+                # Use the interaction's channel ID as fallback
+                ctx = FakeCtx(interaction.channel_id)
+            
+            embed = await ctxmenuhandler.parse_image_info(ctx, attachment.url, "button")
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             print(f"[ERROR] The clipboard button broke: {str(e)}.")
@@ -618,59 +641,59 @@ class DrawView(View):
                                             "You can get the image info from the context menu or **/identify**.",
                                             ephemeral=True)
 
-    @discord.ui.button(
-        custom_id="button_post_civitai",
-        emoji="🌐",
-        label="Post2Civitai")
-    async def button_post_civitai(self, button, interaction):
-        try:
-            WIZZ_ID = 457981967712124948
+    # @discord.ui.button(
+    #     custom_id="button_post_civitai",
+    #     emoji="🌐",
+    #     label="Post2Civitai")
+    # async def button_post_civitai(self, button, interaction):
+    #     try:
+    #         WIZZ_ID = 457981967712124948
 
-            # Restriction : Only Wizz can clic !
-            if interaction.user.id != WIZZ_ID:
-                await interaction.response.send_message("Only Wizz can use this button. (;)", ephemeral=True)
-                return
-                    # Only allow if single image (batch == [1, 1])
-            batch = self.input_tuple[13]
-            if batch[0] != 1 or batch[1] != 1:
-                await interaction.response.send_message("Posting to Civitai is only available for single images.", ephemeral=True)
-                return
+    #         # Restriction : Only Wizz can clic !
+    #         if interaction.user.id != WIZZ_ID:
+    #             await interaction.response.send_message("Only Wizz can use this button. (;)", ephemeral=True)
+    #             return
+    #                 # Only allow if single image (batch == [1, 1])
+    #         batch = self.input_tuple[13]
+    #         if batch[0] != 1 or batch[1] != 1:
+    #             await interaction.response.send_message("Posting to Civitai is only available for single images.", ephemeral=True)
+    #             return
 
-            # Check if the output is from the person who requested it
-            if settings.global_var.restrict_buttons == 'True':
-                if interaction.user.id != self.input_tuple[0].author.id:
-                    await interaction.response.send_message("You can't post other people's images!", ephemeral=True)
-                    return
+    #         # Check if the output is from the person who requested it
+    #         if settings.global_var.restrict_buttons == 'True':
+    #             if interaction.user.id != self.input_tuple[0].author.id:
+    #             await interaction.response.send_message("You can't post other people's images!", ephemeral=True)
+    #             return
 
-            await interaction.response.defer(ephemeral=True)
-            attachment = self.message.attachments[0]
-            image_url = attachment.url
+    #         await interaction.response.defer(ephemeral=True)
+    #         attachment = self.message.attachments[0]
+    #         image_url = attachment.url
 
-            # Call your async function to post to civitai with playwright (to be implemented)
-            result = await civitaiposter.post_image_to_civitai(
-                image_url=image_url,
-                user_id=interaction.user.id
-            )
-            if result.get('success'):
-                msg = (
-                    f"✅ Successfully posted to Civitai!\n"
-                    f"[Open post]({result['post_url']})\n"
-                    f"[View image]({result['main_img_url']})\n"
-                    f"{result['main_img_url']}"
-                )
-                await interaction.followup.send(msg)
-            else:
-                await interaction.followup.send(
-                    f"❌ Failed to post to Civitai: {result.get('error', 'Unknown error')}", ephemeral=True
-                )
-        except Exception as e:
-            print('The Civitai post button broke: ' + str(e))
-            button.disabled = True
-            await interaction.response.edit_message(view=self)
-            await interaction.followup.send(
-                f"An error occurred: {str(e)}\nTry again or check logs.",
-                ephemeral=True
-            )
+    #         # Call your async function to post to civitai with playwright (to be implemented)
+    #         result = await civitaiposter.post_image_to_civitai(
+    #             image_url=image_url,
+    #             user_id=interaction.user.id
+    #         )
+    #         if result.get('success'):
+    #             msg = (
+    #                 f"✅ Successfully posted to Civitai!\n"
+    #                 f"[Open post]({result['post_url']})\n"
+    #                 f"[View image]({result['main_img_url']})\n"
+    #                 f"{result['main_img_url']}"
+    #             )
+    #             await interaction.followup.send(msg)
+    #         else:
+    #             await interaction.followup.send(
+    #                 f"❌ Failed to post to Civitai: {result.get('error', 'Unknown error')}", ephemeral=True
+    #             )
+    #     except Exception as e:
+    #         print('The Civitai post button broke: ' + str(e))
+    #         button.disabled = True
+    #         await interaction.response.edit_message(view=self)
+    #         await interaction.followup.send(
+    #             f"An error occurred: {str(e)}\nTry again or check logs.",
+    #             ephemeral=True
+    #         )
 
     # the button to delete generated images
     @discord.ui.button(

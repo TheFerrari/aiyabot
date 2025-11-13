@@ -236,7 +236,7 @@ class StylesSelect(Select):
         for option in self.options:
             option.default = option.value in selected_styles
 
-'''
+
 class ModelsSelect(Select):
     def __init__(self, models_list, *args, **kwargs):
         limited_models_list = models_list[:25]
@@ -253,7 +253,7 @@ class ModelsSelect(Select):
         self.view.models_selections = selected_models
         #print(f"Selected Model: {selected_models[0]}")
         await interaction.response.defer()
-'''
+
 
 class GenerateView(View):
     def __init__(self, prompts, generate_cog, ctx, message, prompt, num_prompts, max_length, temperature, top_k, repetition_penalty):
@@ -286,9 +286,9 @@ class GenerateView(View):
 
         # Create and add the Models dropdown menu
         settings_cog = settingscog.SettingsCog(self)
-        #models_list = settings_cog.model_autocomplete()
-        #self.models_select = ModelsSelect(models_list)
-        #self.add_item(self.models_select)
+        models_list = settings_cog.model_autocomplete()
+        self.models_select = ModelsSelect(models_list)
+        self.add_item(self.models_select)
 
         # Create and add the Lora dropdown menu
         settings_cog = settingscog.SettingsCog(self)

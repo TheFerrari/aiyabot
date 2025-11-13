@@ -10,6 +10,7 @@ import random
 import requests
 import time
 import traceback
+import threading
 #from core.mask_server import MaskEditorServer
 from PIL import Image, PngImagePlugin
 from discord import option, OptionChoice
@@ -19,10 +20,11 @@ from core import queuehandler
 from core import viewhandler
 from core import settings
 from core import settingscog
+from . import constants
 from core.queuehandler import GlobalQueue
 from core.leaderboardcog import LeaderboardCog
 from core.color_correction_sharpening import apply_color_correction
-from core.persistence import save_message, load_all, delete_message
+#from core.persistence import save_message, load_all, delete_message
 
 USE_LLAMA_CPP = True
 
@@ -297,6 +299,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         required=False,
         autocomplete=discord.utils.basic_autocomplete(settingscog.SettingsCog.hires_autocomplete),
     )
+
     @option(
         'clip_skip',
         int,
@@ -343,6 +346,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                             seed: Optional[int] = -1,
                             styles: Optional[str] = None,
                             random_style: Optional[bool] = False,
+
                             extra_net: Optional[str] = None,
                             adetailer: Optional[bool] = None,
                             highres_fix: Optional[str] = None,
@@ -441,15 +445,16 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         if guidance_scale is None:
             guidance_scale = settings.read(channel)['guidance_scale']
         if distilled_cfg_scale is None:
-            distilled_cfg_scale = settings.read(channel)['distilled_cfg_scale']
+            distilled_cfg_scale = settings.read(channel).get('distilled_cfg_scale', '3.5')
         if sampler is None:
             sampler = settings.read(channel)['sampler']
         if scheduler is None:
-            scheduler = settings.read(channel)['scheduler']
+            scheduler = settings.read(channel).get('scheduler', 'Automatic')
         if styles is None:
             styles = settings.read(channel)['style']
         if highres_fix is None:
             highres_fix = settings.read(channel)['highres_fix']
+
         if clip_skip is None:
             clip_skip = settings.read(channel)['clip_skip']
         if strength is None:
@@ -536,16 +541,17 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             except Exception:
                 reply_adds += f"\nGuidance Scale can't be ``{guidance_scale}``! Setting to default of `5.5`."
                 guidance_scale = 5.5
-        if distilled_cfg_scale != settings.read(channel)['distilled_cfg_scale']:
+        if distilled_cfg_scale != settings.read(channel).get('distilled_cfg_scale', '3.5'):
             try:
                 distilled_cfg_scale = float(str(distilled_cfg_scale).replace(",", "."))
                 reply_adds += f'\nDistilled CFG Scale: ``{distilled_cfg_scale}``'
             except Exception:
                 reply_adds += f"\nDistilled CFG Scale can't be ``{distilled_cfg_scale}``! Setting to default of `3.5`."
                 distilled_cfg_scale = 3.5
-        if sampler != settings.read(channel)['sampler']:
+        if sampler != settings.read(channel).get('sampler'):
             reply_adds += f'\nSampler: ``{sampler}``'
-        if scheduler != settings.read(channel)['scheduler']:
+
+        if scheduler != settings.read(channel).get('scheduler', 'Automatic'):
             reply_adds += f' - Scheduler: ``{scheduler}``'
         if init_image:
             # try to convert string to Web UI-friendly float
@@ -602,6 +608,8 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         #    reply_adds += f'\nPose Reference URL: ``{poseref}``'
         #if ipadapter is not None:
         #    reply_adds += f'\nIPAdapter Reference URL: ``{ipadapter}``'
+
+
 
         epoch_time = int(time.time())
 
@@ -749,6 +757,135 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         try:
             start_time = time.time()
 
+            # Obtener configuración de live_preview del canal
+            user_id, user_name = settings.fuzzy_get_id_name(queue_object.ctx)
+            channel = '% s' % queue_object.ctx.channel.id
+            live_preview = settings.read(channel)['live_preview']
+            
+            status_message_task = None
+            status_thread = None
+
+            if live_preview:
+                # Crear mensaje de estado inicial para live preview
+                status_message_task = event_loop.create_task(queue_object.ctx.channel.send(
+                    f'**Author**: {user_id} ({user_name})\n'
+                    f'**Prompt**: `{queue_object.prompt}`\n**Progress**: initialization...'
+                    f'\n0/{queue_object.steps} iterations, 0.00 it/s'
+                    f'\n**ETA**: initialization...'))
+
+                # Función para actualizar progreso en tiempo real
+                def update_progress_worker():
+                    import threading
+                    import contextlib
+                    
+                    async def update_progress():
+                        tries = 0
+                        any_job = False
+                        tries_since_no_progress = 0
+                        last_file = None
+                        
+                        # Crear una nueva sesión para el thread
+                        session = settings.authenticate_user()
+                        
+                        # Pequeña pausa para asegurar que el mensaje se haya creado
+                        time.sleep(0.5)
+                        
+                        while not queue_object.is_done:
+                            try:
+                                progress_data = session.get(url=f'{settings.global_var.url}/sdapi/v1/progress').json()
+                                job_name = progress_data.get('state', {}).get('job', '')
+                                
+                                if job_name != '':
+                                    any_job = True
+                                    tries_since_no_progress = 0
+                                else:
+                                    if any_job:
+                                        if tries_since_no_progress >= 2:
+                                            break
+                                        tries_since_no_progress += 1
+                                    else:
+                                        if tries > 10:
+                                            break
+                                        tries += 1
+                                    
+                                    time.sleep(settings.global_var.preview_update_interval)
+                                    continue
+
+                                # Procesar imagen de preview si está disponible
+                                file = None
+                                if progress_data.get("current_image") is not None:
+                                    image = Image.open(io.BytesIO(base64.b64decode(progress_data["current_image"])))
+                                    
+                                    with contextlib.ExitStack() as stack:
+                                        buffer = stack.enter_context(io.BytesIO())
+                                        image.save(buffer, 'PNG')
+                                        buffer.seek(0)
+                                        filename = f'{queue_object.seed}.png'
+                                        if hasattr(queue_object, 'spoiler') and queue_object.spoiler:
+                                            filename = f'SPOILER_{queue_object.seed}.png'
+                                        fp = buffer
+                                        file = discord.File(fp, filename)
+                                        last_file = {
+                                            'name': filename,
+                                            'buffer': fp
+                                        }
+                                elif last_file is not None:
+                                    last_file['buffer'].seek(0)
+                                    file = discord.File(last_file['buffer'], last_file['name'])
+
+                                # Calcular iteraciones por segundo
+                                ips = '?'
+                                if progress_data.get("eta_relative", 0) != 0:
+                                    current_step = progress_data.get("state", {}).get("sampling_step", 0)
+                                    remaining_steps = queue_object.steps - current_step
+                                    ips = round(remaining_steps / progress_data["eta_relative"], 2)
+
+                                # Crear vista de progreso
+                                view = viewhandler.ProgressView()
+
+                                files = []
+                                if file is not None:
+                                    files = [file]
+
+                                # Actualizar mensaje de progreso
+                                try:
+                                    await status_message_task.result().edit(
+                                        content=f'**Author**: {user_id} ({user_name})\n'
+                                                f'**Prompt**: `{queue_object.prompt}`\n**Progress**: {round(progress_data.get("progress", 0) * 100, 2)}% '
+                                                f'\n{progress_data.get("state", {}).get("sampling_step", 0)}/{queue_object.steps} iterations, '
+                                                f'~{ips} it/s'
+                                                f'\n**ETA**: {round(progress_data.get("eta_relative", 0), 2)} seconds',
+                                        files=files, view=view)
+                                except Exception as edit_error:
+                                    print(f"Error editing progress message: {edit_error}")
+                                    break
+                                
+                                time.sleep(settings.global_var.preview_update_interval)
+                                
+                            except Exception as e:
+                                print('Error en update_progress:', str(e))
+                                if tries_since_no_progress >= 3:
+                                    break
+                                tries_since_no_progress += 1
+                                time.sleep(settings.global_var.preview_update_interval)
+                    
+                    # Ejecutar la función de actualización de progreso
+                    event_loop.create_task(update_progress())
+
+                # Iniciar thread para actualización de progreso
+                status_thread = threading.Thread(target=update_progress_worker, daemon=True)
+                status_thread.start()
+
+            # send normal payload to webui and only send model payload if one is defined
+            s = settings.authenticate_user()
+            
+            # Verificar que la sesión se haya creado correctamente
+            if s is None:
+                error_msg = "❌ No se pudo conectar con la Web UI de Stable Diffusion. Verifica que esté ejecutándose."
+                event_loop.create_task(queue_object.ctx.channel.send(error_msg))
+                queue_object.is_done = True
+                return
+
             # construct a payload for data model, then the normal payload
             model_payload = {
                 "sd_model_checkpoint": queue_object.data_model
@@ -781,6 +918,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 ]
             }
 
+
+
+
             # update payload if init_img or init_url is used
             if queue_object.init_image is not None:
                 image = base64.b64encode(requests.get(queue_object.init_image.url, stream=True).content).decode('utf-8')
@@ -799,7 +939,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
             # hires payload
             if queue_object.highres_fix != 'Disabled':
-                upscale_ratio = 1.6
+                upscale_ratio = 2
                 queue_object.width = int(queue_object.width * upscale_ratio)
                 queue_object.height = int(queue_object.height * upscale_ratio)
                 highres_payload = {
@@ -808,13 +948,13 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                     "hr_scale": upscale_ratio,
                     "hr_cfg": float(queue_object.guidance_scale),
                     "hr_distilled_cfg": float(queue_object.distilled_cfg_scale),
-                    "hr_second_pass_steps": int(queue_object.steps / 1.3),
-                    "denoising_strength": 0.48, #queue_object.strength, # 0.48s
-                    "hr_prompt": "(Sharp focus:2), " + queue_object.prompt,
-                    "hr_negative_prompt": "(Undersaturated, washed colors), (blurry), (poorly drawn:2), " + queue_object.negative_prompt,
+                    #"hr_second_pass_steps": int(queue_object.steps / 1.7),
+                    "denoising_strength": queue_object.strength,
+                    #"hr_prompt": "(Sharp focus:2), " + queue_object.prompt,
+                    #"hr_negative_prompt": "(Undersaturated, washed colors), (blurry), (poorly drawn:2), " + queue_object.negative_prompt,
                     #"hr_prompt": "(subsurface scattering:2), (extremely fine details:2), (consistency:2), smooth, round pupils, perfect teeth, perfect hands, (extremely detailed teeth:2), (extremely detailed hands:2), (extremely detailed face:2), (extremely detailed eyes:2), photorealism, film grain, candid camera, color graded cinematic, eye catchlights, atmospheric lighting, shallow dof, " + queue_object.prompt,
                     #"hr_negative_prompt": "(low quality:2), (worst quality:2), (bad hands:2), (ugly eyes:2), (fused fingers:2), (elongated fingers:2), (additionnal fingers:2), missing fingers, long nails, grainy, (intricated patterns:2), (intricated vegetation:2), grainy, lowres, noise, poor detailing, unprofessional, unsmooth, license plate, aberrations, collapsed, conjoined, extra windows, harsh lighting, multiple levels, overexposed, rotten, sketchy, twisted, underexposed, unnatural, unreal engine, unrealistic, video game, (poorly rendered face:2), " + queue_object.negative_prompt
-                    "hr_additional_modules": ["Use same choices"],
+                    #"hr_additional_modules": ["Use same choices"],
                 }
                 payload.update(highres_payload)
 
@@ -932,14 +1072,21 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             }
             payload.update(alwayson_scripts_payload)
 
-            # send normal payload to webui and only send model payload if one is defined
-            s = settings.authenticate_user()
-
             if queue_object.data_model != '':
                 try:
                     s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=model_payload)
                 except requests.exceptions.ConnectionError:
                     print("Connection error. No response from API. (StableCog l.756)")
+                    error_msg = "❌ Error de conexión con la Web UI. Verifica que esté ejecutándose."
+                    event_loop.create_task(queue_object.ctx.channel.send(error_msg))
+                    queue_object.is_done = True
+                    return
+                except Exception as e:
+                    print(f"Error al configurar el modelo: {e}")
+                    error_msg = f"❌ Error al configurar el modelo: {e}"
+                    event_loop.create_task(queue_object.ctx.channel.send(error_msg))
+                    queue_object.is_done = True
+                    return
 
             is_flux = "flux" in queue_object.data_model.lower()
 
@@ -980,13 +1127,49 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=forge_options_payload)
             except requests.exceptions.ConnectionError:
                 print("Connection error. No response from API pour forge options.")
+                error_msg = "❌ Error de conexión al configurar Forge. Verifica que la Web UI esté ejecutándose."
+                event_loop.create_task(queue_object.ctx.channel.send(error_msg))
+                queue_object.is_done = True
+                return
+            except Exception as e:
+                print(f"Error al configurar Forge: {e}")
+                # Continuar sin configuración de Forge si hay error
+                pass
 
             if queue_object.init_image is not None:
-                response = s.post(url=f'{settings.global_var.url}/sdapi/v1/img2img', json=payload)
+                try:
+                    response = s.post(url=f'{settings.global_var.url}/sdapi/v1/img2img', json=payload)
+                except requests.exceptions.ConnectionError:
+                    error_msg = "❌ Error de conexión con la Web UI durante img2img. Verifica que esté ejecutándose."
+                    event_loop.create_task(queue_object.ctx.channel.send(error_msg))
+                    queue_object.is_done = True
+                    return
+                except Exception as e:
+                    error_msg = f"❌ Error durante img2img: {e}"
+                    event_loop.create_task(queue_object.ctx.channel.send(error_msg))
+                    queue_object.is_done = True
+                    return
             else:
-                response = s.post(url=f'{settings.global_var.url}/sdapi/v1/txt2img', json=payload)
+                try:
+                    response = s.post(url=f'{settings.global_var.url}/sdapi/v1/txt2img', json=payload)
+                except requests.exceptions.ConnectionError:
+                    error_msg = "❌ Error de conexión con la Web UI durante txt2img. Verifica que esté ejecutándose."
+                    event_loop.create_task(queue_object.ctx.channel.send(error_msg))
+                    queue_object.is_done = True
+                    return
+                except Exception as e:
+                    error_msg = f"❌ Error durante txt2img: {e}"
+                    event_loop.create_task(queue_object.ctx.channel.send(error_msg))
+                    queue_object.is_done = True
+                    return
 
-            response_data = response.json()
+            try:
+                response_data = response.json()
+            except Exception as e:
+                error_msg = f"❌ Error al procesar la respuesta de la Web UI: {e}"
+                event_loop.create_task(queue_object.ctx.channel.send(error_msg))
+                queue_object.is_done = True
+                return
 
             # Ultimate SD Upscale payload
             if queue_object.adetailer == 'Details++' and response.ok:
@@ -1297,6 +1480,18 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
             # progression flag, job done
             queue_object.is_done = True
+
+            # Eliminar mensaje de progreso si live_preview está habilitado
+            if live_preview and status_message_task is not None:
+                def delete_progress_message():
+                    try:
+                        event_loop.create_task(status_message_task.result().delete())
+                    except Exception as e:
+                        print(f"Error deleting progress message: {e}")
+                
+                # Ejecutar en thread separado para evitar bloqueos
+                delete_thread = threading.Thread(target=delete_progress_message, daemon=True)
+                delete_thread.start()
 
             # update the leaderboard
             batch_total = queue_object.batch[0] * queue_object.batch[1]

@@ -105,20 +105,90 @@ class IdentifyCog(commands.Cog):
     def dream(self, event_loop: AbstractEventLoop, queue_object: queuehandler.IdentifyObject):
         try:
             # construct a payload
-            image = base64.b64encode(requests.get(queue_object.init_image, stream=True).content).decode('utf-8')
+            # Robust fetch of the image (Discord CDN/ephemeral links may require UA and can expire)
+            try:
+                img_resp = requests.get(
+                    queue_object.init_image,
+                    stream=True,
+                    timeout=15,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
+                    }
+                )
+            except Exception as fetch_err:
+                print(f"[identify] Image fetch failed: url={queue_object.init_image} err={fetch_err}")
+                embed = discord.Embed(
+                    title='identify failed',
+                    description=f'Failed to download the image: {fetch_err}',
+                    color=settings.global_var.embed_color
+                )
+                event_loop.create_task(queue_object.ctx.channel.send(embed=embed))
+                return
+
+            if img_resp.status_code != 200:
+                print(f"[identify] Image fetch bad status: {img_resp.status_code} url={queue_object.init_image}")
+                embed = discord.Embed(
+                    title='identify failed',
+                    description=f'Failed to download the image (HTTP {img_resp.status_code}). The URL may have expired. Please resend the image.',
+                    color=settings.global_var.embed_color
+                )
+                event_loop.create_task(queue_object.ctx.channel.send(embed=embed))
+                return
+
+            content_type = img_resp.headers.get('Content-Type', '')
+            content_len = int(img_resp.headers.get('Content-Length') or 0)
+            print(f"[identify] Image fetched: status={img_resp.status_code} content_type={content_type} bytes={content_len or 'unknown'}")
+            if 'image' not in content_type:
+                embed = discord.Embed(
+                    title='identify failed',
+                    description='The provided link did not return a valid image. It may have expired or require authentication.',
+                    color=settings.global_var.embed_color
+                )
+                event_loop.create_task(queue_object.ctx.channel.send(embed=embed))
+                return
+
+            image = base64.b64encode(img_resp.content).decode('utf-8')
+            mime = (content_type.split(';')[0] if content_type else 'image/png')
             payload = {
-                "image": 'data:image/png;base64,' + image,
+                "image": f'data:{mime};base64,' + image,
                 "model": queue_object.phrasing
             }
             # send normal payload to webui
             s = settings.authenticate_user()
 
             response = s.post(url=f'{settings.global_var.url}/sdapi/v1/interrogate', json=payload)
-            response_data = response.json()
+            print(f"[identify] API response: status={response.status_code}")
+            try:
+                response_data = response.json()
+            except Exception:
+                body_preview = (response.text[:300] + '...') if response and response.text else 'empty'
+                print(f"[identify] Failed to parse JSON. Body preview: {body_preview}")
+                response_data = {"error": f"Invalid API response (HTTP {response.status_code})"}
 
             # post to discord
             def post_dream():
-                caption = response_data.get('caption')
+                caption = (
+                    response_data.get('caption')
+                    or response_data.get('result')
+                    or response_data.get('description')
+                    or ''
+                )
+                if not caption:
+                    # Friendly message when there is no description
+                    keys = ','.join(list(response_data.keys())) if isinstance(response_data, dict) else 'n/a'
+                    print(f"[identify] No caption returned. Response keys: {keys}")
+                    fail_msg = response_data.get('error') or 'The API did not return any description or tags.'
+                    embed = discord.Embed(title='identify', description=fail_msg)
+                    embed.set_image(url=queue_object.init_image)
+                    embed.colour = settings.global_var.embed_color
+                    footer_args = dict(text=f'{queue_object.ctx.author.name}#{queue_object.ctx.author.discriminator}')
+                    if queue_object.ctx.author.avatar is not None:
+                        footer_args['icon_url'] = queue_object.ctx.author.avatar.url
+                    embed.set_footer(**footer_args)
+                    queuehandler.process_post(
+                        self, queuehandler.PostObject(
+                            self, queue_object.ctx, content=f'<@{queue_object.ctx.author.id}>', file='', embed=embed, view=queue_object.view))
+                    return
                 embed_title = 'I think this is'
                 if len(caption) > 4096:
                     caption = caption[:4096]
