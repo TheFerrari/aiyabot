@@ -12,3 +12,16 @@ resources/*.toml
 .env
 start.bat
 core/MagicPrompt-SD/*
+core/WizzGPT6/WizzGPTv6.Q8_0.gguf
+core/Llama-3.2-11B-Vision-Instruct-gguf/Llama-3.2-11B-Vision-Instruct.Q4_K_M.gguf
+core/WizzGPT6/pytorch_model.bin
+leaderboard.csv
+resources/1models.csv
+resources/Nueva carpeta/models.csv
+core/WizzGPT6/vocab.json
+core/WizzGPT6/tokenizer.json
+core/WizzGPT6/tokenizer_config.json
+core/WizzGPT6/special_tokens_map.json
+core/WizzGPT6/merges.txt
+core/WizzGPT6/generation_config.json
+core/WizzGPT6/config.json
