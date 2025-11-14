@@ -10,7 +10,7 @@ from core import queuehandler
 from core import settings
 from core import stablecog
 from core import upscalecog
-from core import civitaiposter
+
 
 
 '''
@@ -275,19 +275,22 @@ class DrawModal(Modal):
                         name=f"`{line.split(':', 1)[1]}` is not valid for distilled cfg scale!",
                         value='Make sure you enter a number. Example: 3.5', inline=False)
             if 'sampler:' in line:
-                if line.split(':', 1)[1] in settings.global_var.sampler_names:
-                    pen[9] = line.split(':', 1)[1]
+                sampler_value = line.split(':', 1)[1].strip()
+                if sampler_value in settings.global_var.sampler_names:
+                    pen[9] = sampler_value
                 else:
                     invalid_input = True
-                    embed_err.add_field(name=f"`{line.split(':', 1)[1]}` is unrecognized. I know of these samplers!",
+                    embed_err.add_field(name=f"`{sampler_value}` is unrecognized. I know of these samplers!",
                                         value=', '.join(['`%s`' % x for x in settings.global_var.sampler_names]),
                                         inline=False)
             if 'scheduler:' in line:
-                if line.split(':', 1)[1] in settings.global_var.scheduler_names:
-                    pen[20] = line.split(':', 1)[1]
+                scheduler_value = line.split(':', 1)[1].strip()
+                # If we could not load schedulers from the backend, accept any value to stay compatible.
+                if not settings.global_var.scheduler_names or scheduler_value in settings.global_var.scheduler_names:
+                    pen[20] = scheduler_value
                 else:
                     invalid_input = True
-                    embed_err.add_field(name=f"`{line.split(':', 1)[1]}` is unrecognized. I know of these schedulers!",
+                    embed_err.add_field(name=f"`{scheduler_value}` is unrecognized. I know of these schedulers!",
                                         value=', '.join(['`%s`' % x for x in settings.global_var.scheduler_names]),
                                         inline=False)
             if 'strength:' in line:
@@ -640,60 +643,6 @@ class DrawView(View):
             await interaction.followup.send("I may have been restarted. This button no longer works.\n"
                                             "You can get the image info from the context menu or **/identify**.",
                                             ephemeral=True)
-
-    # @discord.ui.button(
-    #     custom_id="button_post_civitai",
-    #     emoji="🌐",
-    #     label="Post2Civitai")
-    # async def button_post_civitai(self, button, interaction):
-    #     try:
-    #         WIZZ_ID = 457981967712124948
-
-    #         # Restriction : Only Wizz can clic !
-    #         if interaction.user.id != WIZZ_ID:
-    #             await interaction.response.send_message("Only Wizz can use this button. (;)", ephemeral=True)
-    #             return
-    #                 # Only allow if single image (batch == [1, 1])
-    #         batch = self.input_tuple[13]
-    #         if batch[0] != 1 or batch[1] != 1:
-    #             await interaction.response.send_message("Posting to Civitai is only available for single images.", ephemeral=True)
-    #             return
-
-    #         # Check if the output is from the person who requested it
-    #         if settings.global_var.restrict_buttons == 'True':
-    #             if interaction.user.id != self.input_tuple[0].author.id:
-    #             await interaction.response.send_message("You can't post other people's images!", ephemeral=True)
-    #             return
-
-    #         await interaction.response.defer(ephemeral=True)
-    #         attachment = self.message.attachments[0]
-    #         image_url = attachment.url
-
-    #         # Call your async function to post to civitai with playwright (to be implemented)
-    #         result = await civitaiposter.post_image_to_civitai(
-    #             image_url=image_url,
-    #             user_id=interaction.user.id
-    #         )
-    #         if result.get('success'):
-    #             msg = (
-    #                 f"✅ Successfully posted to Civitai!\n"
-    #                 f"[Open post]({result['post_url']})\n"
-    #                 f"[View image]({result['main_img_url']})\n"
-    #                 f"{result['main_img_url']}"
-    #             )
-    #             await interaction.followup.send(msg)
-    #         else:
-    #             await interaction.followup.send(
-    #                 f"❌ Failed to post to Civitai: {result.get('error', 'Unknown error')}", ephemeral=True
-    #             )
-    #     except Exception as e:
-    #         print('The Civitai post button broke: ' + str(e))
-    #         button.disabled = True
-    #         await interaction.response.edit_message(view=self)
-    #         await interaction.followup.send(
-    #             f"An error occurred: {str(e)}\nTry again or check logs.",
-    #             ephemeral=True
-    #         )
 
     # the button to delete generated images
     @discord.ui.button(

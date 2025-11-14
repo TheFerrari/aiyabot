@@ -8,7 +8,7 @@ from core import settings
 from core.logging_setup import get_logger
 from dotenv import load_dotenv
 from core.queuehandler import GlobalQueue
-#from core.civitaiposter import forget_civitai_session
+
 #from core.mask_server import MaskEditorServer
 
 

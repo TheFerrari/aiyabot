@@ -20,7 +20,7 @@ from core import queuehandler
 from core import viewhandler
 from core import settings
 from core import settingscog
-from . import constants
+#from . import constants
 from core.queuehandler import GlobalQueue
 from core.leaderboardcog import LeaderboardCog
 from core.color_correction_sharpening import apply_color_correction
@@ -42,6 +42,7 @@ size_ratios = {
     "Widescreen: 16:9 - 1344x768": (1344, 768),
     "Ultrawide: 21:9 - 1536x640": (1536, 640),
     "Square: 1:1 - 1024x1024": (1024, 1024),
+    "Square SD - 512x512": (512, 512),
     "Tall: 9:16 - 768x1344": (768, 1344)
 }
 

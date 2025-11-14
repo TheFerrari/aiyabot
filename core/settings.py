@@ -670,9 +670,26 @@ def populate_global_vars():
     except Exception as e:
         print(f"Error al procesar upscalers: {e}")
     
+    # schedulers endpoint can vary between backends (AUTOMATIC1111, SD.Next, etc.)
+    # Try to handle multiple JSON shapes so scheduler_names is populated whenever possible.
     try:
-        for s7 in r7.json():
-            global_var.scheduler_names.append(s7['name'])
+        schedulers_data = r7.json()
+        if isinstance(schedulers_data, list):
+            for item in schedulers_data:
+                if isinstance(item, dict):
+                    name = item.get('name') or item.get('label') or item.get('id') or item.get('value')
+                    if name:
+                        global_var.scheduler_names.append(str(name))
+                elif isinstance(item, str):
+                    global_var.scheduler_names.append(item)
+        elif isinstance(schedulers_data, dict):
+            for key, value in schedulers_data.items():
+                if isinstance(value, dict):
+                    name = value.get('name') or value.get('label') or key
+                else:
+                    name = key
+                if name:
+                    global_var.scheduler_names.append(str(name))
     except Exception as e:
         print(f"Error al procesar schedulers: {e}")
     if 'SwinIR_4x' in global_var.upscaler_names:

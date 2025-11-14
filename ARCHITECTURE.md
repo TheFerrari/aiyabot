@@ -155,7 +155,6 @@ En `core/chatbotcog.py` (`LlamaChatCog`):
   - `/minigame` para iniciar partidas, usando la misma infraestructura de generación que `/draw`.
 - Otras utilidades:
   - `color_correction_sharpening.py` – `measure_saturation`, `apply_sharpening`, `apply_color_correction`.
-  - `civitaiposter.py` – `post_image_to_civitai` y helpers de sesión Chrome.
   - `logging_setup.py` – configuración básica de logging.
   - `constants.py` – constantes de backend (`BACKEND_WEBUI`, `BACKEND_SDNEXT`).
   - `setup_generate.py` – descarga inicial de modelos LLM desde HuggingFace.
