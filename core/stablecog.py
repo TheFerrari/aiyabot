@@ -20,7 +20,7 @@ from typing import Optional
 from core import queuehandler
 from core import viewhandler
 from core import settings
-from core import settingscog
+from core import autocomplete as ac
 #from . import constants
 from core.queuehandler import GlobalQueue
 from core.leaderboardcog import LeaderboardCog
@@ -268,11 +268,6 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         self.bot = bot
         self.pipe = None
 
-    if len(settings.global_var.size_range) == 0:
-        size_auto = discord.utils.basic_autocomplete(settingscog.SettingsCog.size_autocomplete)
-    else:
-        size_auto = None
-
     async def generate_prompt_async(self, prompt: str):
         gpt2_singleton = GPT2ModelSingleton.get_instance()
         llm = gpt2_singleton.llm
@@ -347,7 +342,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         str,
         description='Select the data model for image generation.',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(settingscog.SettingsCog.model_autocomplete),
+        autocomplete=ac.model_autocomplete,
     )
     @option(
         'steps',
@@ -361,7 +356,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         int,
         description='Width of the generated image.',
         required=False,
-        autocomplete=size_auto,
+        autocomplete=ac.size_autocomplete,
         choices=settings.global_var.size_range
     )
     @option(
@@ -369,7 +364,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         int,
         description='Height of the generated image.',
         required=False,
-        autocomplete=size_auto,
+        autocomplete=ac.size_autocomplete,
         choices=settings.global_var.size_range
     )
     @option(
@@ -396,14 +391,14 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         str,
         description='The sampling method to use for generation.',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(settingscog.SettingsCog.sampler_autocomplete),
+        autocomplete=ac.sampler_autocomplete,
     )
     @option(
         'scheduler',
         str,
         description='The schedule type to use for generation.',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(settingscog.SettingsCog.scheduler_autocomplete),
+        autocomplete=ac.scheduler_autocomplete,
     )
     @option(
         'seed',
@@ -416,7 +411,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         str,
         description='Apply a predefined style to the generation.',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(settingscog.SettingsCog.style_autocomplete),
+        autocomplete=ac.style_autocomplete,
     )
     @option(
         'random_style',
@@ -430,7 +425,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         str,
         description='Apply an extra network to influence the output. To set multiplier, add :# (# = 0.0 - 1.0)',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(settingscog.SettingsCog.extra_net_autocomplete),
+        autocomplete=ac.extra_net_autocomplete,
     )
     @option(
         'adetailer',
@@ -456,7 +451,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         str,
         description='Tries to fix issues from generating high-res images. Recommended: 4x-UltraMix_Balanced.',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(settingscog.SettingsCog.hires_autocomplete),
+        autocomplete=ac.hires_autocomplete,
     )
 
     @option(
