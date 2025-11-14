@@ -25,3 +25,5 @@ core/WizzGPT6/special_tokens_map.json
 core/WizzGPT6/merges.txt
 core/WizzGPT6/generation_config.json
 core/WizzGPT6/config.json
+core/stablecog.old.py
+core/stablecog_new.py

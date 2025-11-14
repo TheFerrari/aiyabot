@@ -11,6 +11,7 @@ import requests
 import time
 import traceback
 import threading
+from enum import Enum
 #from core.mask_server import MaskEditorServer
 from PIL import Image, PngImagePlugin
 from discord import option, OptionChoice
@@ -45,6 +46,163 @@ size_ratios = {
     "Square SD - 512x512": (512, 512),
     "Tall: 9:16 - 768x1344": (768, 1344)
 }
+
+
+class SDBackend(str, Enum):
+    """Tipo de backend de Stable Diffusion que estamos usando.
+
+    - ``automatic``: WebUI AUTOMATIC1111 / SD.Next sin extensiones Forge.
+    - ``forge``: Stable Diffusion WebUI Forge (acepta opciones forge_*).
+    - ``sdnext``: SD.Next (evitamos opciones específicas de Forge).
+    """
+
+    AUTOMATIC = "automatic"
+    FORGE = "forge"
+    SDNEXT = "sdnext"
+
+
+def _detect_backend_from_env_or_url() -> SDBackend:
+    """Intenta detectar el backend a partir de variables de entorno o la URL.
+
+    - Si ``AIYA_SD_BACKEND`` está definido, se respeta siempre.
+    - Si no, se hace una heurística muy ligera en base a la URL.
+
+    Nota: es intencionado que el valor por defecto sea ``automatic`` para
+    evitar enviar payloads Forge a backends que no los soportan.
+    """
+    env_backend = os.getenv("AIYA_SD_BACKEND", "").strip().lower()
+    if env_backend in {"forge", "sd_forge", "stable-diffusion-webui-forge"}:
+        return SDBackend.FORGE
+    if env_backend in {"sdnext", "sd_next", "next", "stable-diffusion-webui-next"}:
+        return SDBackend.SDNEXT
+    if env_backend in {"automatic", "auto", "a1111", "auto1111"}:
+        return SDBackend.AUTOMATIC
+
+    # Heurística muy simple basada en la URL configurada.
+    url = (getattr(settings.global_var, "url", "") or "").lower()
+    if "forge" in url:
+        return SDBackend.FORGE
+    if "sdnext" in url or "sd-next" in url:
+        return SDBackend.SDNEXT
+
+    return SDBackend.AUTOMATIC
+
+
+def get_sd_backend() -> SDBackend:
+    """Devuelve el backend que debe usarse.
+
+    Esta función es el único punto de acceso para el resto del código,
+    lo que facilita cambiar la lógica de detección más adelante
+    (por ejemplo, leyendo de config.toml en lugar de variables de entorno).
+    """
+    return _detect_backend_from_env_or_url()
+
+
+def build_backend_options(queue_object, backend: SDBackend) -> dict:
+    """Construye el payload de /options específico para cada backend.
+
+    - Para Forge: incluye las claves ``forge_*`` y ``img2img_extra_noise``.
+    - Para SD.Next: sólo toca opciones genéricas que existen también allí
+      (p.ej. ``img2img_extra_noise``) y evita las claves Forge.
+    - Para AUTOMATIC: por defecto no se tocan opciones adicionales para
+      minimizar sorpresas; si quieres afinarlas, hazlo vía configuración.
+    """
+    options: dict = {}
+
+    data_model = getattr(queue_object, "data_model", "") or ""
+    is_flux = "flux" in data_model.lower()
+
+    # Ajustes comunes seguros entre backends
+    if backend in {SDBackend.FORGE, SDBackend.SDNEXT}:
+        # ``img2img_extra_noise`` existe en A1111/SD.Next, pero por prudencia
+        # sólo lo tocamos cuando el backend está explícitamente configurado.
+        options["img2img_extra_noise"] = 0.015 if is_flux else 0.045
+
+    if backend is not SDBackend.FORGE:
+        # Nada más que hacer si no estamos en Forge.
+        return options
+
+    # A partir de aquí, claves específicas de Forge.
+    forge_preset = "flux" if is_flux else "sdxl"
+
+    if "nf4" in data_model.lower():
+        forge_unet_storage_dtype = "bnb-fp4 (fp16 LoRA)"
+    else:
+        forge_unet_storage_dtype = "Automatic (fp16 LoRA)"
+
+    # Directorio de módulos: permitir override por variable de entorno.
+    default_modules_dir = (
+        "C:\\Users\\wizz\\stable-diffusion\\stable-diffusion-webui-forge\\models\\text_encoder\\"
+    )
+    modules_dir = os.getenv("AIYA_FORGE_MODULES_DIR", default_modules_dir)
+
+    modules_to_load = [
+        os.path.join(modules_dir, "ViT-L-14-REG-GATED-balanced-ckpt12.safetensors")
+    ]
+    if is_flux:
+        modules_to_load += [
+            os.path.join(modules_dir, "t5xxl_fp16.safetensors"),
+            os.path.join(modules_dir, "flux_vae.safetensors"),
+        ]
+    else:
+        modules_to_load += [
+            os.path.join(modules_dir, "sdxl_vae.safetensors"),
+        ]
+
+    options.update(
+        {
+            "forge_preset": forge_preset,
+            "forge_additional_modules": modules_to_load,
+            "forge_unet_storage_dtype": forge_unet_storage_dtype,
+        }
+    )
+
+    return options
+
+
+def _filter_options_payload_for_backend(url: str, payload):
+    """Filtra claves específicas de Forge cuando el backend no es Forge.
+
+    Esto permite reutilizar el mismo código de payload pero evita enviar
+    campos como ``forge_preset`` a APIs que no los conocen (por ejemplo,
+    SD.Next o AUTOMATIC1111 puro).
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    if "/sdapi/v1/options" not in url:
+        return payload
+
+    backend = get_sd_backend()
+    if backend is SDBackend.FORGE:
+        return payload
+
+    # Para backends que no son Forge, eliminamos todas las claves forge_*.
+    if any(k.startswith("forge_") for k in payload.keys()):
+        filtered = {k: v for k, v in payload.items() if not k.startswith("forge_")}
+        print(f"Filtrando claves Forge en /options para backend '{backend.value}'.")
+        return filtered
+
+    return payload
+
+
+# Monkeypatch ligero de requests para filtrar payloads incompatibles con SD.Next
+_original_requests_post = requests.post
+_original_session_post = requests.sessions.Session.post
+
+
+def _patched_requests_post(url, *args, **kwargs):
+    kwargs["json"] = _filter_options_payload_for_backend(url, kwargs.get("json"))
+    return _original_requests_post(url, *args, **kwargs)
+
+
+def _patched_session_post(self, url, *args, **kwargs):
+    kwargs["json"] = _filter_options_payload_for_backend(url, kwargs.get("json"))
+    return _original_session_post(self, url, *args, **kwargs)
+
+
+requests.post = _patched_requests_post
+requests.sessions.Session.post = _patched_session_post
 
 
 class GPT2ModelSingleton:
@@ -333,7 +491,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
     )
     async def dream_handler(self, ctx: discord.ApplicationContext, *,
                             prompt: str,
-                            random_prompt: Optional[bool] = False,
+                            random_prompt: Optional[str] = None,
                             negative_prompt: str = None,
                             data_model: Optional[str] = None,
                             steps: Optional[int] = None,
@@ -346,10 +504,10 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                             scheduler: Optional[str] = None,
                             seed: Optional[int] = -1,
                             styles: Optional[str] = None,
-                            random_style: Optional[bool] = False,
+                            random_style: Optional[str] = None,
 
                             extra_net: Optional[str] = None,
-                            adetailer: Optional[bool] = None,
+                            adetailer: Optional[str] = None,
                             highres_fix: Optional[str] = None,
                             clip_skip: Optional[int] = None,
                             strength: Optional[str] = None,
