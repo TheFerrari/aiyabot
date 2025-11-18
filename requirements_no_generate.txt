@@ -1,5 +1,6 @@
 py-cord
 python-dotenv
+psutil
 requests
 pillow
 tomlkit
