@@ -16,7 +16,7 @@ from enum import Enum
 from PIL import Image, PngImagePlugin
 from discord import option, OptionChoice
 from discord.ext import commands
-from typing import Optional
+from typing import Optional, List
 from core import queuehandler
 from core import viewhandler
 from core import settings
@@ -414,6 +414,27 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         autocomplete=ac.style_autocomplete,
     )
     @option(
+        'styles1',
+        str,
+        description='Apply an additional predefined style to the generation.',
+        required=False,
+        autocomplete=ac.style_autocomplete,
+    )
+    @option(
+        'styles2',
+        str,
+        description='Apply an additional predefined style to the generation.',
+        required=False,
+        autocomplete=ac.style_autocomplete,
+    )
+    @option(
+        'styles3',
+        str,
+        description='Apply an additional predefined style to the generation.',
+        required=False,
+        autocomplete=ac.style_autocomplete,
+    )
+    @option(
         'random_style',
         str,
         description='Choose a style at random.',
@@ -424,6 +445,27 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         'extra_net',
         str,
         description='Apply an extra network to influence the output. To set multiplier, add :# (# = 0.0 - 1.0)',
+        required=False,
+        autocomplete=ac.extra_net_autocomplete,
+    )
+    @option(
+        'extra_net1',
+        str,
+        description='Apply an additional extra network to influence the output.',
+        required=False,
+        autocomplete=ac.extra_net_autocomplete,
+    )
+    @option(
+        'extra_net2',
+        str,
+        description='Apply an additional extra network to influence the output.',
+        required=False,
+        autocomplete=ac.extra_net_autocomplete,
+    )
+    @option(
+        'extra_net3',
+        str,
+        description='Apply an additional extra network to influence the output.',
         required=False,
         autocomplete=ac.extra_net_autocomplete,
     )
@@ -499,9 +541,15 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                             scheduler: Optional[str] = None,
                             seed: Optional[int] = -1,
                             styles: Optional[str] = None,
+                            styles1: Optional[str] = None,
+                            styles2: Optional[str] = None,
+                            styles3: Optional[str] = None,
                             random_style: Optional[str] = None,
 
                             extra_net: Optional[str] = None,
+                            extra_net1: Optional[str] = None,
+                            extra_net2: Optional[str] = None,
+                            extra_net3: Optional[str] = None,
                             adetailer: Optional[str] = None,
                             highres_fix: Optional[str] = None,
                             clip_skip: Optional[int] = None,
@@ -536,7 +584,13 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 "sampler":         sampler,
                 "scheduler":       scheduler,
                 "styles":          styles,
+                "styles1":         styles1,
+                "styles2":         styles2,
+                "styles3":         styles3,
                 "extra_net":       extra_net,
+                "extra_net1":      extra_net1,
+                "extra_net2":      extra_net2,
+                "extra_net3":      extra_net3,
                 "adetailer":       adetailer,
                 "highres_fix":     highres_fix,
                 "clip_skip":       clip_skip,
@@ -583,11 +637,39 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 style_dict = settings_cog.get_available_styles()
                 chosen_style_key = random.choice(list(style_dict.keys())) if style_dict else None
                 if chosen_style_key:
+                    # Override manual style inputs when random style is requested.
                     styles = chosen_style_key
+                    styles1 = None
+                    styles2 = None
+                    styles3 = None
 
         # update defaults with any new defaults from settingscog
         channel = '% s' % ctx.channel.id
         settings.check(channel)
+
+        # Collect style and extra_net values into de-duplicated lists.
+        style_inputs = [styles, styles1, styles2, styles3]
+        style_list: List[str] = []
+        for s in style_inputs:
+            if s is None:
+                continue
+            s = s.strip()
+            if not s:
+                continue
+            if s not in style_list:
+                style_list.append(s)
+
+        extra_inputs = [extra_net, extra_net1, extra_net2, extra_net3]
+        extra_list: List[str] = []
+        for e in extra_inputs:
+            if e is None:
+                continue
+            e = e.strip()
+            if not e:
+                continue
+            if e not in extra_list:
+                extra_list.append(e)
+
         if negative_prompt is None:
             negative_prompt = settings.read(channel)['negative_prompt']
         if steps is None:
@@ -604,8 +686,14 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             sampler = settings.read(channel)['sampler']
         if scheduler is None:
             scheduler = settings.read(channel).get('scheduler', 'Automatic')
-        if styles is None:
-            styles = settings.read(channel)['style']
+
+        # Apply default style only when the user did not provide any styles.
+        default_style = settings.read(channel)['style']
+        if not style_list and default_style is not None:
+            style_list.append(default_style)
+
+        # Join styles for display/storage while keeping the list for backend use.
+        styles = ', '.join(style_list) if style_list else default_style
         if highres_fix is None:
             highres_fix = settings.read(channel)['highres_fix']
 
@@ -646,10 +734,25 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                     prompt = model[1][3] + " " + prompt
                 break
 
-        net_multi = 0.85
-        if extra_net is not None:
-            prompt, extra_net, net_multi = settings.extra_net_check(prompt, extra_net, net_multi)
+        # Apply all selected extra networks to the prompt.
+        net_multi_default = 0.85
+        extra_net_multipliers: dict = {}
+        applied_extra_nets: List[str] = []
+        for extra_name in extra_list:
+            local_multi = net_multi_default
+            prompt, cleaned_extra, local_multi = settings.extra_net_check(prompt, extra_name, local_multi)
+            if cleaned_extra is None or cleaned_extra == 'None':
+                continue
+            if cleaned_extra not in applied_extra_nets:
+                applied_extra_nets.append(cleaned_extra)
+            extra_net_multipliers[cleaned_extra] = local_multi
+
+        # Also append default hypernet / LoRA for the channel.
         prompt = settings.extra_net_defaults(prompt, channel)
+
+        # Build a compact representation of all extra nets for storage / display.
+        if applied_extra_nets:
+            extra_net = ', '.join(applied_extra_nets)
 
         if data_model != '':
             print(f'/Draw request -- {ctx.author.name} -- Prompt: {prompt}')
@@ -752,10 +855,16 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             reply_adds += f'\nBatch count: ``{batch[0]}`` - Batch size: ``{batch[1]}``'
         if styles != settings.read(channel)['style']:
             reply_adds += f'\nStyle: ``{styles}``'
-        if extra_net is not None and extra_net != 'None':
-            reply_adds += f'\nExtra network: ``{extra_net}``'
-            if net_multi != 0.85:
-                reply_adds += f' (multiplier: ``{net_multi}``)'
+        if applied_extra_nets:
+            # Describe all selected extra networks and their multipliers.
+            extra_desc_parts = []
+            for name in applied_extra_nets:
+                multi = extra_net_multipliers.get(name, net_multi_default)
+                if multi != net_multi_default:
+                    extra_desc_parts.append(f'``{name}`` (multiplier: ``{multi}``)')
+                else:
+                    extra_desc_parts.append(f'``{name}``')
+            reply_adds += '\nExtra networks: ' + ', '.join(extra_desc_parts)
         if clip_skip != settings.read(channel)['clip_skip']:
             reply_adds += f'\nCLIP skip: ``{clip_skip}``'
         #if poseref is not None:
@@ -1051,6 +1160,13 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             #    queue_object.negative_prompt = ""
             #    queue_object.sampler = "Euler a"
 
+            # Normalize styles into a list for the backend.
+            styles_payload: List[str] = []
+            if isinstance(queue_object.styles, str):
+                styles_payload = [s.strip() for s in queue_object.styles.split(",") if s.strip()]
+            elif isinstance(queue_object.styles, (list, tuple, set)):
+                styles_payload = [str(s).strip() for s in queue_object.styles if str(s).strip()]
+
             payload = {
                 "prompt": queue_object.prompt,
                 "negative_prompt": queue_object.negative_prompt,
@@ -1067,9 +1183,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 "denoising_strength": None,
                 "n_iter": queue_object.batch[0],
                 "batch_size": queue_object.batch[1],
-                "styles": [
-                    queue_object.styles
-                ]
+                "styles": styles_payload,
             }
 
 
