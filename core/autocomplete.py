@@ -57,6 +57,46 @@ def make_simple_autocomplete(get_items: Callable[[], Iterable[str]]):
     return callback
 
 
+def make_multi_autocomplete(get_items: Callable[[], Iterable[str]]):
+    """
+    Autocomplete que permite construir una lista de valores en un solo campo.
+    Soporta varios valores separados por ',' o ';' y completa siempre el
+    último segmento, devolviendo el valor completo (segmentos previos + nuevo).
+    """
+
+    async def callback(ctx: discord.AutocompleteContext):
+        items = _normalize_to_str_list(get_items())
+
+        raw = ctx.value or ""
+        # Buscar el último separador ',' o ';'
+        last_comma = raw.rfind(",")
+        last_semicolon = raw.rfind(";")
+        sep_index = max(last_comma, last_semicolon)
+
+        if sep_index == -1:
+            existing = ""
+            prefix = raw.strip()
+            sep_char = ","
+        else:
+            existing = raw[:sep_index]
+            prefix = raw[sep_index + 1 :].strip()
+            sep_char = raw[sep_index]
+
+        candidates = _filter_choices(prefix, items)
+        results: List[str] = []
+
+        for cand in candidates:
+            if not existing.strip():
+                value = cand
+            else:
+                value = f"{existing.rstrip()}{sep_char} {cand}"
+            results.append(value)
+
+        return results
+
+    return callback
+
+
 model_autocomplete = make_simple_autocomplete(
     lambda: settings.global_var.model_info
 )
@@ -69,7 +109,7 @@ scheduler_autocomplete = make_simple_autocomplete(
     lambda: settings.global_var.scheduler_names
 )
 
-style_autocomplete = make_simple_autocomplete(
+style_autocomplete = make_multi_autocomplete(
     lambda: settings.global_var.style_names
 )
 
@@ -140,7 +180,7 @@ def _get_hires_upscalers() -> Iterable[str]:
 
 
 lora_autocomplete = make_simple_autocomplete(_get_lora_names)
-extra_net_autocomplete = make_simple_autocomplete(_get_extra_nets)
+extra_net_autocomplete = make_multi_autocomplete(_get_extra_nets)
 hires_autocomplete = make_simple_autocomplete(_get_hires_upscalers)
 
 

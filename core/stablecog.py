@@ -123,7 +123,7 @@ def build_backend_options(queue_object, backend: SDBackend) -> dict:
         return options
 
     # A partir de aquí, claves específicas de Forge.
-    forge_preset = "flux" if is_flux else "sdxl"
+    forge_preset = "flux" if is_flux else "xl"
 
     if "nf4" in data_model.lower():
         forge_unet_storage_dtype = "bnb-fp4 (fp16 LoRA)"
@@ -409,28 +409,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
     @option(
         'styles',
         str,
-        description='Apply a predefined style to the generation.',
-        required=False,
-        autocomplete=ac.style_autocomplete,
-    )
-    @option(
-        'styles1',
-        str,
-        description='Apply an additional predefined style to the generation.',
-        required=False,
-        autocomplete=ac.style_autocomplete,
-    )
-    @option(
-        'styles2',
-        str,
-        description='Apply an additional predefined style to the generation.',
-        required=False,
-        autocomplete=ac.style_autocomplete,
-    )
-    @option(
-        'styles3',
-        str,
-        description='Apply an additional predefined style to the generation.',
+        description='Apply one or more predefined styles (separate multiple with , or ;).',
         required=False,
         autocomplete=ac.style_autocomplete,
     )
@@ -444,28 +423,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
     @option(
         'extra_net',
         str,
-        description='Apply an extra network to influence the output. To set multiplier, add :# (# = 0.0 - 1.0)',
-        required=False,
-        autocomplete=ac.extra_net_autocomplete,
-    )
-    @option(
-        'extra_net1',
-        str,
-        description='Apply an additional extra network to influence the output.',
-        required=False,
-        autocomplete=ac.extra_net_autocomplete,
-    )
-    @option(
-        'extra_net2',
-        str,
-        description='Apply an additional extra network to influence the output.',
-        required=False,
-        autocomplete=ac.extra_net_autocomplete,
-    )
-    @option(
-        'extra_net3',
-        str,
-        description='Apply an additional extra network to influence the output.',
+        description='Apply extra networks, separated by , or ;. Use :# for multiplier (0.0-1.0).',
         required=False,
         autocomplete=ac.extra_net_autocomplete,
     )
@@ -541,15 +499,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                             scheduler: Optional[str] = None,
                             seed: Optional[int] = -1,
                             styles: Optional[str] = None,
-                            styles1: Optional[str] = None,
-                            styles2: Optional[str] = None,
-                            styles3: Optional[str] = None,
                             random_style: Optional[str] = None,
 
                             extra_net: Optional[str] = None,
-                            extra_net1: Optional[str] = None,
-                            extra_net2: Optional[str] = None,
-                            extra_net3: Optional[str] = None,
                             adetailer: Optional[str] = None,
                             highres_fix: Optional[str] = None,
                             clip_skip: Optional[int] = None,
@@ -584,13 +536,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 "sampler":         sampler,
                 "scheduler":       scheduler,
                 "styles":          styles,
-                "styles1":         styles1,
-                "styles2":         styles2,
-                "styles3":         styles3,
                 "extra_net":       extra_net,
-                "extra_net1":      extra_net1,
-                "extra_net2":      extra_net2,
-                "extra_net3":      extra_net3,
                 "adetailer":       adetailer,
                 "highres_fix":     highres_fix,
                 "clip_skip":       clip_skip,
@@ -639,36 +585,31 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 if chosen_style_key:
                     # Override manual style inputs when random style is requested.
                     styles = chosen_style_key
-                    styles1 = None
-                    styles2 = None
-                    styles3 = None
 
         # update defaults with any new defaults from settingscog
         channel = '% s' % ctx.channel.id
         settings.check(channel)
 
         # Collect style and extra_net values into de-duplicated lists.
-        style_inputs = [styles, styles1, styles2, styles3]
         style_list: List[str] = []
-        for s in style_inputs:
-            if s is None:
-                continue
-            s = s.strip()
-            if not s:
-                continue
-            if s not in style_list:
-                style_list.append(s)
+        if styles is not None:
+            normalized_styles = styles.replace(";", ",")
+            for s in normalized_styles.split(","):
+                s = s.strip()
+                if not s:
+                    continue
+                if s not in style_list:
+                    style_list.append(s)
 
-        extra_inputs = [extra_net, extra_net1, extra_net2, extra_net3]
         extra_list: List[str] = []
-        for e in extra_inputs:
-            if e is None:
-                continue
-            e = e.strip()
-            if not e:
-                continue
-            if e not in extra_list:
-                extra_list.append(e)
+        if extra_net is not None:
+            normalized_extra = extra_net.replace(";", ",")
+            for e in normalized_extra.split(","):
+                e = e.strip()
+                if not e:
+                    continue
+                if e not in extra_list:
+                    extra_list.append(e)
 
         if negative_prompt is None:
             negative_prompt = settings.read(channel)['negative_prompt']
@@ -1359,7 +1300,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             is_flux = "flux" in queue_object.data_model.lower()
 
             # Gérer le preset
-            forge_preset = "flux" if is_flux else "sdxl"
+            forge_preset = "flux" if is_flux else "xl"
 
             # Gérer le storage dtype
             if "nf4" in queue_object.data_model.lower():
@@ -1421,12 +1362,12 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 try:
                     response = s.post(url=f'{settings.global_var.url}/sdapi/v1/txt2img', json=payload)
                 except requests.exceptions.ConnectionError:
-                    error_msg = "❌ Error de conexión con la Web UI durante txt2img. Verifica que esté ejecutándose."
+                    error_msg = "❌ BOT Crash :c."
                     event_loop.create_task(queue_object.ctx.channel.send(error_msg))
                     queue_object.is_done = True
                     return
                 except Exception as e:
-                    error_msg = f"❌ Error durante txt2img: {e}"
+                    error_msg = f"❌ Error on txt2img: {e}"
                     event_loop.create_task(queue_object.ctx.channel.send(error_msg))
                     queue_object.is_done = True
                     return
@@ -1434,7 +1375,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             try:
                 response_data = response.json()
             except Exception as e:
-                error_msg = f"❌ Error al procesar la respuesta de la Web UI: {e}"
+                error_msg = f"❌ Error on Web UI: {e}"
                 event_loop.create_task(queue_object.ctx.channel.send(error_msg))
                 queue_object.is_done = True
                 return
