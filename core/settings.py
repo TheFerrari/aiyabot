@@ -594,7 +594,8 @@ def populate_global_vars():
     global_var.prompt_ignore_list = [x for x in config['prompt_ignore_list']]
     global_var.display_ignored_words = config['display_ignored_words']
     global_var.negative_prompt_prefix = [x for x in config['negative_prompt_prefix']]
-    global_var.prompt_prefix = [x for x in config['prompt_prefix']]
+    # prompt_prefix is a single string, not a list
+    global_var.prompt_prefix = config.get('prompt_prefix', "").strip()
     # slash command doesn't update this dynamically. Changes to size need a restart.
     global_var.size_range = range(192, config['max_size'], 2)
     if len(global_var.size_range) > 25:

@@ -347,12 +347,17 @@ class DrawModal(Modal):
         else:
             # run through mod function if any moderation values are set in config
             new_clean_negative = ''
-            if settings.global_var.prompt_ban_list or settings.global_var.prompt_ignore_list or settings.global_var.negative_prompt_prefix:
+            if (settings.global_var.prompt_ban_list
+                    or settings.global_var.prompt_ignore_list
+                    or settings.global_var.negative_prompt_prefix
+                    or settings.global_var.prompt_prefix):
                 mod_results = settings.prompt_mod(self.children[0].value, self.children[1].value)
                 if settings.global_var.prompt_ban_list and mod_results[0] == "Stop":
                     await interaction.response.send_message(f"I'm not allowed to draw the word {mod_results[1]}!", ephemeral=True)
                     return
-                if settings.global_var.prompt_ignore_list or settings.global_var.negative_prompt_prefix and mod_results[0] == "Mod":
+                if (settings.global_var.prompt_ignore_list
+                        or settings.global_var.negative_prompt_prefix
+                        or settings.global_var.prompt_prefix) and mod_results[0] == "Mod":
                     if settings.global_var.display_ignored_words == "False":
                         pen[1] = mod_results[1]
                     pen[2] = mod_results[1]
