@@ -37,7 +37,7 @@ save_outputs = "True"
 dir = "outputs"
 
 # The limit of tasks a user can have waiting in queue (at least 1)
-queue_limit = 99
+queue_limit = 10
 
 # Whether or not buttons keep generating in batches ("True"/"False")
 batch_buttons = "True"
@@ -46,7 +46,7 @@ batch_buttons = "True"
 restrict_buttons = "False"
 
 # The maximum value allowed for width/height (keep as multiple of 8)
-max_size = 2048
+max_size = 1536
 
 # The resize amount when using context menu Quick Upscale
 quick_upscale_resize = 2.0
@@ -64,17 +64,17 @@ negative_prompt_prefix = []
 
 
 # the fallback channel defaults template for AIYA if nothing is set
-prompt_prefix = ""
-negative_prompt = "(worst quality:1.2), (low quality:1.2), (normal quality:1.2), lowres, signature, watermark, username, cropped"
-data_model = "ZavyChromaXL"
-steps = 30
-max_steps = 100
+prompt_prefix = "<lora:dmd2 4 steps color fix:0.65>"
+negative_prompt = "worst quality, low quality, lowres, signature, watermark, username, cropped"
+data_model = ""
+steps = 8
+max_steps = 28
 width = 832
 height = 1216
-guidance_scale = "6.0"
-distilled_cfg_scale = "3.5"
-sampler = "DPM++ 3M SDE"
-scheduler = "exponential"
+guidance_scale = "1"
+distilled_cfg_scale = "1"
+sampler = "LCM"
+scheduler = "automatic"
 style = "None"
 highres_fix = "Disabled"
 clip_skip = 1
