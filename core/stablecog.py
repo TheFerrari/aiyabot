@@ -21,6 +21,7 @@ from core import queuehandler
 from core import viewhandler
 from core import settings
 from core import autocomplete as ac
+from core import auto_restart_sd
 #from . import constants
 from core.queuehandler import GlobalQueue
 from core.leaderboardcog import LeaderboardCog
