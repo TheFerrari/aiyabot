@@ -9,24 +9,25 @@ import os
 import random
 import requests
 import time
-import traceback
 import threading
 from enum import Enum
 #from core.mask_server import MaskEditorServer
 from PIL import Image, PngImagePlugin
-from discord import option, OptionChoice
+from discord import option
 from discord.ext import commands
 from typing import Optional, List
 from core import queuehandler
 from core import viewhandler
 from core import settings
 from core import autocomplete as ac
-from core import auto_restart_sd
+from core.logging_setup import get_logger
 #from . import constants
 from core.queuehandler import GlobalQueue
 from core.leaderboardcog import LeaderboardCog
 from core.color_correction_sharpening import apply_color_correction
 #from core.persistence import save_message, load_all, delete_message
+
+logger = get_logger(__name__)
 
 USE_LLAMA_CPP = True
 
@@ -181,7 +182,7 @@ def _filter_options_payload_for_backend(url: str, payload):
     # Para backends que no son Forge, eliminamos todas las claves forge_*.
     if any(k.startswith("forge_") for k in payload.keys()):
         filtered = {k: v for k, v in payload.items() if not k.startswith("forge_")}
-        print(f"Filtrando claves Forge en /options para backend '{backend.value}'.")
+        logger.info("Filtrando claves Forge en /options para backend '%s'.", backend.value)
         return filtered
 
     return payload
@@ -309,7 +310,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                     if row and random.randrange(count) == 0:
                         chosen_line = row
         except Exception as e:
-            print(f"Error reading file: {e}")
+            logger.exception("Error reading random prompt file: %s", e)
             return None
 
         return chosen_line[0] if chosen_line else None
@@ -701,9 +702,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             extra_net = ', '.join(applied_extra_nets)
 
         if data_model != '':
-            print(f'/Draw request -- {ctx.author.name} -- Prompt: {prompt}')
+            logger.info('/Draw request -- %s -- Prompt: %s', ctx.author.name, prompt)
         else:
-            print(f'/Draw request -- {ctx.author.name} -- Prompt: {prompt} -- Using model: {data_model}')
+            logger.info('/Draw request -- %s -- Prompt: %s -- Using model: %s', ctx.author.name, prompt, data_model)
 
         if seed == -1:
             seed = random.randint(0, 0xFFFFFFFF)
@@ -905,12 +906,12 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
                 while queuehandler.GlobalQueue.dream_thread.is_alive():
                     await asyncio.sleep(3)
-                print("Infinite job done, next one will start soon\n")
+                logger.info("Infinite job done, next one will start soon")
 
                 await asyncio.sleep(1)
 
         except Exception as e:
-            print(f"[InfiniteLoop] erreur pour {ctx.author.id} : {e}")
+            logger.exception("[InfiniteLoop] error for user_id=%s: %s", ctx.author.id, e)
         finally:
             # s’assure qu’on enlève le flag si erreur ou fin
             infinite_flags.discard(ctx.author.id)
@@ -955,7 +956,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         event_loop.create_task(send_message())
 
         if queuehandler.GlobalQueue.post_queue:
-            self.post(self.event_loop, self.queue.pop(0))
+            self.post(event_loop, queuehandler.GlobalQueue.post_queue.pop(0))
 
     # generate the image
     def dream(self, event_loop: queuehandler.GlobalQueue.event_loop, queue_object: queuehandler.DrawObject):
@@ -984,7 +985,6 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
                 # Función para actualizar progreso en tiempo real
                 def update_progress_worker():
-                    import threading
                     import contextlib
                     
                     async def update_progress():
@@ -1066,13 +1066,13 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                                                 f'\n**ETA**: {round(progress_data.get("eta_relative", 0), 2)} seconds',
                                         files=files, view=view)
                                 except Exception as edit_error:
-                                    print(f"Error editing progress message: {edit_error}")
+                                    logger.warning("Error editing progress message: %s", edit_error)
                                     break
                                 
                                 time.sleep(settings.global_var.preview_update_interval)
                                 
                             except Exception as e:
-                                print('Error en update_progress:', str(e))
+                                logger.warning("Error in update_progress: %s", e)
                                 if tries_since_no_progress >= 3:
                                     break
                                 tries_since_no_progress += 1
@@ -1290,65 +1290,31 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 try:
                     s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=model_payload)
                 except requests.exceptions.ConnectionError:
-                    print("Connection error. No response from API. (StableCog l.756)")
+                    logger.error("Connection error. No response from API while setting model option.")
                     error_msg = "❌ Error de conexión con la Web UI. Verifica que esté ejecutándose."
                     event_loop.create_task(queue_object.ctx.channel.send(error_msg))
                     queue_object.is_done = True
                     return
                 except Exception as e:
-                    print(f"Error al configurar el modelo: {e}")
+                    logger.exception("Error configuring model option: %s", e)
                     error_msg = f"❌ Error al configurar el modelo: {e}"
                     event_loop.create_task(queue_object.ctx.channel.send(error_msg))
                     queue_object.is_done = True
                     return
-
-            is_flux = "flux" in queue_object.data_model.lower()
-
-            # Gérer le preset
-            forge_preset = "flux" if is_flux else "xl"
-
-            # Gérer le storage dtype
-            if "nf4" in queue_object.data_model.lower():
-                forge_unet_storage_dtype = "bnb-fp4 (fp16 LoRA)"
-            else:
-                forge_unet_storage_dtype = "Automatic (fp16 LoRA)"
-
-            # Modules à charger
-            modules_dir = "C:\\Users\\wizz\\stable-diffusion\\stable-diffusion-webui-forge\\models\\text_encoder\\"
-            modules_to_load = [
-                modules_dir + "ViT-L-14-REG-GATED-balanced-ckpt12.safetensors"
-            ]
-            if is_flux:
-                modules_to_load += [
-                    modules_dir + "t5xxl_fp16.safetensors",
-                    modules_dir + "flux_vae.safetensors"
-                ]
-            else:
-                modules_to_load += [
-                    modules_dir + "sdxl_vae.safetensors"
-                ]
-
-            # Construire le payload options complet
-            forge_options_payload = {
-                "forge_preset": forge_preset,
-                "forge_additional_modules": modules_to_load,
-                "forge_unet_storage_dtype": forge_unet_storage_dtype,
-                "img2img_extra_noise": 0.015 if is_flux else 0.045
-            }
-
-            # Envoi la configuration à /options
-            try:
-                s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=forge_options_payload)
-            except requests.exceptions.ConnectionError:
-                print("Connection error. No response from API pour forge options.")
-                error_msg = "❌ Error de conexión al configurar Forge. Verifica que la Web UI esté ejecutándose."
-                event_loop.create_task(queue_object.ctx.channel.send(error_msg))
-                queue_object.is_done = True
-                return
-            except Exception as e:
-                print(f"Error al configurar Forge: {e}")
-                # Continuar sin configuración de Forge si hay error
-                pass
+            backend = get_sd_backend()
+            backend_options_payload = build_backend_options(queue_object, backend)
+            if backend_options_payload:
+                try:
+                    s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=backend_options_payload)
+                except requests.exceptions.ConnectionError:
+                    logger.error("Connection error. No response from API while setting backend options.")
+                    error_msg = "❌ Error de conexión al configurar opciones del backend. Verifica que la Web UI esté ejecutándose."
+                    event_loop.create_task(queue_object.ctx.channel.send(error_msg))
+                    queue_object.is_done = True
+                    return
+                except Exception as e:
+                    # Keep going with default backend options if this request fails.
+                    logger.warning("Error configuring backend options. Continuing with defaults: %s", e)
 
             if queue_object.init_image is not None:
                 try:
@@ -1415,10 +1381,10 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                     current_options = response.json()
                     original_extra_noise = current_options.get("img2img_extra_noise", default_extra_noise)
                     original_initial_noise = current_options.get("initial_noise_multiplier", default_initial_noise)
-                    print(f"Original Extra Noise to restore after Details++: {original_extra_noise}")
-                    print(f"Original Initial Noise to restore after Details++: {original_initial_noise}")
+                    logger.info("Original Extra Noise to restore after Details++: %s", original_extra_noise)
+                    logger.info("Original Initial Noise to restore after Details++: %s", original_initial_noise)
                 else:
-                    print("Error retrieving options")
+                    logger.warning("Error retrieving options before Details++ restore phase")
 
                 if is_flux:
                     option_payload = {"img2img_extra_noise": 0, "initial_noise_multiplier": 1.02}
@@ -1427,9 +1393,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
                 response = s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=option_payload)
                 if response.ok:
-                    print("Options updated successfully for Details++")
+                    logger.info("Options updated successfully for Details++")
                 else:
-                    print("Error updating options")
+                    logger.warning("Error updating options for Details++")
 
 
                 for index, generated_image_base64 in enumerate(generated_images):
@@ -1580,7 +1546,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                             upscaled_image_with_metadata_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
                             upscaled_images_data.append(upscaled_image_with_metadata_base64)
                     else:
-                        print("Error while upscaling with ultimate_sd_upscale")
+                        logger.warning("Error while upscaling with ultimate_sd_upscale")
 
                 response_data["images"] = upscaled_images_data
 
@@ -1591,9 +1557,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 }
                 response = requests.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=restore_payload)
                 if response.ok:
-                    print(f"Options restored successfully to {original_extra_noise} & {original_initial_noise}")
+                    logger.info("Options restored successfully to %s & %s", original_extra_noise, original_initial_noise)
                 else:
-                    print("Error restoring options")
+                    logger.warning("Error restoring options after Details++")
 
             end_time = time.time()
 
@@ -1605,7 +1571,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             # save local copy of image and prepare PIL images
             image_data = response_data['images']
             if not image_data or len(image_data) == 0:
-                print("[dream] No images generated in response_data['images']")
+                logger.error("[dream] No images generated in response_data['images']")
                 # Optionally: send a Discord error message
                 event_loop.create_task(queue_object.ctx.channel.send(
                     "❌ Image generation failed (no image was returned by the model)."
@@ -1674,16 +1640,16 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 # if we are using a batch we need to save the files to disk
                 if settings.global_var.save_outputs == 'True' or batch == True:
                     image.save(file_path, pnginfo=metadata)
-                    print(f'Saved image: {file_path}')
+                    logger.info('Saved image: %s', file_path)
 
                 if batch == True:
-                    image_data = (image, file_path, str_parameters)
-                    images.append(image_data)
+                    image_tuple = (image, file_path, str_parameters)
+                    images.append(image_tuple)
 
                 settings.stats_count(1)
 
                 # increment epoch_time for view when using batch
-                if count != len(image_data):
+                if count != image_count:
                     new_epoch = list(queue_object.view.input_tuple)
                     new_epoch[18] = int(time.time())
                     new_tuple = tuple(new_epoch)
@@ -1701,7 +1667,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                     try:
                         event_loop.create_task(status_message_task.result().delete())
                     except Exception as e:
-                        print(f"Error deleting progress message: {e}")
+                        logger.warning("Error deleting progress message: %s", e)
                 
                 # Ejecutar en thread separado para evitar bloqueos
                 delete_thread = threading.Thread(target=delete_progress_message, daemon=True)
@@ -1778,16 +1744,19 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                         self, queue_object.ctx, content=content, file=file, embed='', view=view))
 
         except KeyError as e:
+            logger.exception("txt2img failed due to missing key: %s", e)
             embed = discord.Embed(title='txt2img failed', description=f'An invalid parameter was found!\nKey causing the error: {e}',
                                 color=settings.global_var.embed_color)
             event_loop.create_task(queue_object.ctx.channel.send(embed=embed))
         except Exception as e:
-            embed = discord.Embed(title='txt2img failed', description=f'{e}\n{traceback.print_exc()}',
+            logger.exception("Unhandled exception during txt2img flow")
+            embed = discord.Embed(title='txt2img failed', description=f'Unexpected error during generation: {e}',
                                   color=settings.global_var.embed_color)
             event_loop.create_task(queue_object.ctx.channel.send(embed=embed))
-        
-        # check each queue for any remaining tasks
-        GlobalQueue.process_queue()
+        finally:
+            queue_object.is_done = True
+            # check each queue for any remaining tasks
+            GlobalQueue.process_queue()
 
 
 def setup(bot):

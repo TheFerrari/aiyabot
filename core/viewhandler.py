@@ -10,6 +10,10 @@ from core import queuehandler
 from core import settings
 from core import stablecog
 from core import upscalecog
+from core.logging_setup import get_logger
+
+
+logger = get_logger(__name__)
 
 
 
@@ -268,7 +272,6 @@ class DrawModal(Modal):
             if 'distilled_cfg_scale:' in line:
                 try:
                     pen[21] = float(line.split(':', 1)[1].replace(",", "."))
-                    print 
                 except Exception:
                     invalid_input = True
                     embed_err.add_field(
@@ -398,7 +401,7 @@ class DrawModal(Modal):
                 elif str(pen[17]) != str(self.input_tuple[17]):
                     prompt_output += f'\nNew extra network: ``{pen[17]}``'
 
-            print(f'Redraw -- {interaction.user.name}#{interaction.user.discriminator} -- Prompt: {pen[1]}')
+            logger.info('Redraw -- %s#%s -- Prompt: %s', interaction.user.name, interaction.user.discriminator, pen[1])
 
             # check queue again, but now we know user is not in queue
             if queuehandler.GlobalQueue.dream_thread.is_alive():
@@ -447,7 +450,7 @@ class DrawView(View):
             else:
                 await interaction.response.send_message("You can't use other people's 🖋!", ephemeral=True)
         except Exception as e:
-            print('The pen button broke: ' + str(e))
+            logger.exception('The pen button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
             button.disabled = True
             await interaction.response.edit_message(view=self)
@@ -474,7 +477,7 @@ class DrawView(View):
                     new_seed[13] = [1, 1]
                 seed_tuple = tuple(new_seed)
 
-                print(f'Reroll -- {interaction.user.name}#{interaction.user.discriminator} -- Prompt: {seed_tuple[1]}')
+                logger.info('Reroll -- %s#%s -- Prompt: %s', interaction.user.name, interaction.user.discriminator, seed_tuple[1])
 
                 # set up the draw dream and do queue code again for lack of a more elegant solution
                 draw_dream = stablecog.StableCog(self)
@@ -495,7 +498,7 @@ class DrawView(View):
             else:
                 await interaction.response.send_message("You can't use other people's 🎲!", ephemeral=True)
         except Exception as e:
-            print('The dice roll button broke: ' + str(e))
+            logger.exception('The dice roll button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
             button.disabled = True
             await interaction.response.edit_message(view=self)
@@ -526,7 +529,7 @@ class DrawView(View):
                     upscaler_1 = settings.read(channel)['upscaler_1']
                     upscale_tuple = (ctx, '2.0', init_image, upscaler_1, "None", '0.5', '0.0', '0.0', False) # Create defaults for upscale. If desired we can add options to the per channel upscale settings for this.
 
-                    print(f'Upscaling -- {interaction.user.name}#{interaction.user.discriminator}')
+                    logger.info('Upscaling -- %s#%s', interaction.user.name, interaction.user.discriminator)
 
                     # set up the draw dream and do queue code again for lack of a more elegant solution
                     draw_dream = upscalecog.UpscaleCog(self)
@@ -546,7 +549,7 @@ class DrawView(View):
             else:
                 await interaction.response.send_message("You can't use other people's ⬆️!", ephemeral=True)
         except Exception as e:
-            print('The upscale button broke: ' + str(e))
+            logger.exception('The upscale button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
             button.disabled = True
             await interaction.response.edit_message(view=self)
@@ -614,7 +617,7 @@ class DrawView(View):
         emoji="📋",
         label="Review")
     async def button_review(self, button, interaction):
-        print("[DEBUG] Button review clicked.")
+        logger.debug("Button review clicked.")
 
         init_url = None
         try:
@@ -641,7 +644,7 @@ class DrawView(View):
             embed = await ctxmenuhandler.parse_image_info(ctx, attachment.url, "button")
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
-            print(f"[ERROR] The clipboard button broke: {str(e)}.")
+            logger.exception("The clipboard button broke: %s", e)
 
             button.disabled = True
             await interaction.response.edit_message(view=self)
@@ -718,7 +721,7 @@ class DownloadMenu(discord.ui.Select):
                 await interaction.response.send_message("You can't download other people's images!", ephemeral=True)
 
         except Exception as e:
-            print('The download menu broke: ' + str(e))
+            logger.exception('The download menu broke: %s', e)
             self.disabled = True
             await interaction.response.edit_message(view=self.view)
             await interaction.followup.send("I may have been restarted. This button no longer works.\n", ephemeral=True)
@@ -748,7 +751,7 @@ class UpscaleMenu(discord.ui.Select):
                 upscaler_1 = settings.read(channel)['upscaler_1']
                 upscale_tuple = (ctx, '2.0', init_image, upscaler_1, "None", '0.5', '0.0', '0.0', False) # Create defaults for upscale. If desired we can add options to the per channel upscale settings for this.
 
-                print(f'Upscaling request -- {interaction.user.name}#{interaction.user.discriminator} for {partial_path}')
+                logger.info('Upscaling request -- %s#%s for %s', interaction.user.name, interaction.user.discriminator, partial_path)
 
                 # set up the draw dream and do queue code again for lack of a more elegant solution
                 draw_dream = upscalecog.UpscaleCog(self)
@@ -769,7 +772,7 @@ class UpscaleMenu(discord.ui.Select):
                 await interaction.response.send_message("You can't upscale other people's images!", ephemeral=True)
         
         except Exception as e:
-            print('The upscale menu broke: ' + str(e))
+            logger.exception('The upscale menu broke: %s', e)
             self.disabled = True
             await interaction.response.edit_message(view=self.view)
             await interaction.followup.send("I may have been restarted. This button no longer works.\n", ephemeral=True)

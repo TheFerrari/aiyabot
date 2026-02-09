@@ -8,6 +8,10 @@ from core import settings
 from core import queuehandler
 from core import upscalecog
 from core import viewhandler
+from core.logging_setup import get_logger
+
+
+logger = get_logger(__name__)
 
 
 def extra_net_search(field):
@@ -43,6 +47,7 @@ def style_remove(search, field):
 async def parse_image_info(ctx, image_url, command):
     message = ''
     try:
+        logger.info("parse_image_info start: command=%s image_url=%s", command, image_url)
         # construct a payload
         image = base64.b64encode(requests.get(image_url, stream=True).content).decode('utf-8')
         payload = {
@@ -210,11 +215,13 @@ async def parse_image_info(ctx, image_url, command):
         embed.set_footer(text=copy_command)
 
         if command == 'button':
+            logger.info("parse_image_info completed for button command")
             return embed
 
         await ctx.respond(embed=embed, ephemeral=True)
+        logger.info("parse_image_info completed: command=%s", command)
     except Exception as e:
-        print(f"Erreur dans parse_image_info: {e}")
+        logger.exception("parse_image_info failed: command=%s image_url=%s err=%s", command, image_url, e)
         if command == 'slash':
             message = "\nIf you're copying from Discord and think there should be image info," \
                       " try **Copy Link** instead of **Copy Image**"
@@ -231,9 +238,11 @@ async def get_image_info(ctx, message: discord.Message):
     urls = extractor.find_urls(all_content)
 
     if not urls:
+        logger.warning("get_image_info: no URLs found in message id=%s", message.id)
         await ctx.respond(content="No images were found in the message...", ephemeral=True)
         return
 
+    logger.info("get_image_info: found %s URL(s) in message id=%s", len(urls), message.id)
     for image_url in urls:
         await parse_image_info(ctx, image_url, "context")
 
@@ -248,6 +257,7 @@ async def quick_upscale(self, ctx, message: discord.Message):
     urls = extractor.find_urls(all_content)
 
     if not urls:
+        logger.warning("quick_upscale: no URLs found in message id=%s", message.id)
         await ctx.respond(content="No images were found in the message...", ephemeral=True)
         return
 
@@ -272,6 +282,13 @@ async def quick_upscale(self, ctx, message: discord.Message):
     view = viewhandler.DeleteView(input_tuple)
     user_queue_limit = settings.queue_check(ctx.author)
     upscale_dream = upscalecog.UpscaleCog(self)
+    logger.info(
+        "quick_upscale request: user_id=%s image_url=%s resize=%s upscaler_1=%s",
+        ctx.author.id,
+        urls[0],
+        resize,
+        upscaler_1,
+    )
     if queuehandler.GlobalQueue.dream_thread.is_alive():
         if user_queue_limit == "Stop":
             await ctx.send_response(
@@ -294,8 +311,15 @@ async def batch_download(ctx, message: discord.Message):
     batch_id_pattern = r"Batch ID: \d+-\d+"
     image_ids_pattern = r"Image IDs: \d+-\d+"
     
-    batch_id = re.search(batch_id_pattern, all_content).group(0).split(": ")[1]
-    image_id = re.search(image_ids_pattern, all_content).group(0).split(": ")[1]
+    batch_id_match = re.search(batch_id_pattern, all_content)
+    image_id_match = re.search(image_ids_pattern, all_content)
+    if not batch_id_match or not image_id_match:
+        logger.warning("batch_download: missing batch metadata in message id=%s", message.id)
+        await ctx.respond(content="No batches were found", ephemeral=True)
+        return
+
+    batch_id = batch_id_match.group(0).split(": ")[1]
+    image_id = image_id_match.group(0).split(": ")[1]
     
     if not batch_id and not image_id:
         await ctx.respond(content="No batches were found", ephemeral=True)
@@ -322,6 +346,13 @@ async def batch_download(ctx, message: discord.Message):
     # Set up tuple of parameters to pass into the Discord view
     input_tuple = (ctx, batch_id, image_id)
     view = viewhandler.DeleteView(input_tuple)
+    logger.info(
+        "batch_download request: user_id=%s batch_id=%s image_ids=%s found_files=%s",
+        ctx.author.id,
+        batch_id,
+        image_id,
+        len(files),
+    )
 
     # Send the files as attachments
     if files:

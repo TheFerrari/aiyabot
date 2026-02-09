@@ -1,5 +1,4 @@
 import discord
-import traceback
 from asyncio import AbstractEventLoop, get_event_loop, run_coroutine_threadsafe
 from discord import option
 from discord.ui import Button, View, Select
@@ -9,9 +8,12 @@ from typing import Optional
 from core import queuehandler
 from core import settings
 from core import settingscog
+from core.logging_setup import get_logger
 from core.queuehandler import GlobalQueue
 from core.stablecog import StableCog
 from core.leaderboardcog import LeaderboardCog
+
+logger = get_logger(__name__)
 
 USE_LLAMA_CPP = True
 
@@ -118,9 +120,9 @@ class PromptButton(Button):
             await interaction.response.defer()
             await self.parent_view.handle_draw_prompt(interaction, self.parent_view.prompts[self.prompt_index], self.prompt_index)
         except discord.errors.InteractionResponded:
-            print("Interaction already responded to.")
+            logger.debug("Prompt button interaction already responded.")
         except Exception as e:
-            print(f'The draw button broke: {str(e)}')
+            logger.exception('The draw button broke: %s', e)
             self.disabled = True
             await interaction.response.edit_message(view=self.parent_view)
             await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
@@ -152,7 +154,7 @@ class RerollButton(Button):
         except discord.InteractionResponded:
             pass
         except Exception as e:
-            print(f'Reroll button broke: {str(e)}')
+            logger.exception('Reroll button broke: %s', e)
             self.disabled = True
             await interaction.response.edit_message(view=self.parent_view)
             await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
@@ -170,7 +172,7 @@ class DeleteButton(Button):
         try:
             await interaction.message.delete()
         except Exception as e:
-            print(f'The delete button broke: {str(e)}')
+            logger.exception('The delete button broke: %s', e)
             self.disabled = True
             await interaction.response.edit_message(view=self.parent_view)
             await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
@@ -195,7 +197,7 @@ class DrawAllButton(Button):
             # Éditez la réponse originale avec la vue mise à jour
             await interaction.edit_original_response(view=self.parent_view)
         except Exception as e:
-            print(f'Draw All button broke: {str(e)}')
+            logger.exception('Draw All button broke: %s', e)
             self.disabled = True
             await interaction.response.edit_message(view=self.parent_view)
             await interaction.followup.send("Une erreur s'est produite lors de la génération de toutes les prompts.", ephemeral=True)
@@ -452,7 +454,14 @@ class GenerateCog(commands.Cog):
         called_from_reroll = getattr(ctx, 'called_from_reroll', False)
         current_prompt = 0
 
-        print(f"/Generate request -- {ctx.author.name}#{ctx.author.discriminator} -- {num_prompts} prompt(s) of {max_length} tokens. Text: {prompt}")
+        logger.info(
+            "/Generate request -- %s#%s -- %s prompt(s) of %s tokens. Text: %s",
+            ctx.author.name,
+            ctx.author.discriminator,
+            num_prompts,
+            max_length,
+            prompt,
+        )
 
         # sanity check
         if not prompt or prompt.isspace():
@@ -516,8 +525,10 @@ class GenerateCog(commands.Cog):
         # set up the queue
         if queuehandler.GlobalQueue.generate_thread.is_alive():
             queuehandler.GlobalQueue.generate_queue.append(queuehandler.GenerateObject(self, ctx, prompt, num_prompts, max_length, temperature, top_k, repetition_penalty, current_prompt, model))
+            logger.info("Generate enqueued: user_id=%s queue_size=%s", ctx.author.id, len(queuehandler.GlobalQueue.generate_queue))
         else:
             await queuehandler.process_generate(self, queuehandler.GenerateObject(self, ctx, prompt, num_prompts, max_length, temperature, top_k, repetition_penalty, current_prompt, model))
+            logger.info("Generate started immediately: user_id=%s", ctx.author.id)
         
         if called_from_reroll:
             await ctx.channel.send(response_message)
@@ -566,7 +577,8 @@ class GenerateCog(commands.Cog):
             event_loop.create_task(self.send_with_view(prompts, queue_object.ctx, queue_object.prompt, num_prompts, max_length, temperature, top_k, repetition_penalty))
 
         except Exception as e:
-            embed = discord.Embed(title='Generation failed', description=f'{e}\n{traceback.print_exc()}', color=0x00ff00)
+            logger.exception("Unhandled exception while generating prompts")
+            embed = discord.Embed(title='Generation failed', description=f'Unexpected error while generating prompts: {e}', color=0x00ff00)
             event_loop.create_task(queue_object.ctx.channel.send(embed=embed))
 
         if queuehandler.GlobalQueue.generate_queue:
