@@ -1186,7 +1186,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
             # hires payload
             if queue_object.highres_fix != 'Disabled':
-                upscale_ratio = 1.2
+                upscale_ratio = 1.3
+                base_steps = max(1, int(float(queue_object.steps)))
+                hr_second_pass_steps = max(1, base_steps // 2)
                 queue_object.width = int(queue_object.width * upscale_ratio)
                 queue_object.height = int(queue_object.height * upscale_ratio)
                 highres_payload = {
@@ -1195,7 +1197,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                     "hr_scale": upscale_ratio,
                     "hr_cfg": float(queue_object.guidance_scale),
                     "hr_distilled_cfg": float(queue_object.distilled_cfg_scale),
-                    #"hr_second_pass_steps": int(queue_object.steps / 1.7),
+                    "hr_second_pass_steps": hr_second_pass_steps,
                     "denoising_strength": queue_object.strength,
                     #"hr_prompt": "(Sharp focus:2), " + queue_object.prompt,
                     #"hr_negative_prompt": "(Undersaturated, washed colors), (blurry), (poorly drawn:2), " + queue_object.negative_prompt,
