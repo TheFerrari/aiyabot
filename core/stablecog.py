@@ -1383,215 +1383,171 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 queue_object.is_done = True
                 return
 
-            # Ultimate SD Upscale payload
+            # Details++ extra upscale/refine pass (nerfed profile for lower VRAM/RAM systems)
             if queue_object.adetailer == 'Details++' and response.ok:
                 generated_images = response_data.get("images")
                 upscaled_images_data = []
                 upscaled_images_metadata = []
 
-                # adjust values
-                custom_scale, denoising_strength = (2.4, 0.42) if queue_object.adetailer == 'Details++' else (1, 0.10)
-                tile_width = int(queue_object.width * custom_scale) / 3 if queue_object.highres_fix != 'Disabled' else int(queue_object.width * custom_scale)
-                tile_height = int(queue_object.height * custom_scale) / 3 if queue_object.highres_fix != 'Disabled' else int(queue_object.height * custom_scale)
-                queue_object.width = int(queue_object.width * custom_scale)
-                queue_object.height = int(queue_object.height * custom_scale)
+                details_custom_scale = 1.30 if queue_object.highres_fix != 'Disabled' else 1.45
+                details_denoising_strength = 0.30
+                details_steps_mult = 1.15
+                details_steps_cap = 36
+                details_max_side = 2048
+                details_max_pixels = 3_000_000
 
-                # update the Extra Noise setting
-                response = requests.get(url=f'{settings.global_var.url}/sdapi/v1/options')
+                projected_width = int(queue_object.width * details_custom_scale)
+                projected_height = int(queue_object.height * details_custom_scale)
+                projected_pixels = projected_width * projected_height
+                run_extra_details_pass = (
+                    projected_pixels <= details_max_pixels
+                    and max(projected_width, projected_height) <= details_max_side
+                )
 
-                is_flux = "flux" in queue_object.data_model.lower()
+                logger.info(
+                    "Details++ profile: base=%sx%s projected=%sx%s pixels=%s run_extra_pass=%s",
+                    queue_object.width,
+                    queue_object.height,
+                    projected_width,
+                    projected_height,
+                    projected_pixels,
+                    run_extra_details_pass,
+                )
 
-                # Adapt noise values to model type
-                if is_flux:
-                    default_extra_noise = 0.015
-                    default_initial_noise = 1
-                else:
-                    default_extra_noise = 0.045
-                    default_initial_noise = 1
+                if run_extra_details_pass:
+                    tile_width = int(projected_width / 3) if queue_object.highres_fix != 'Disabled' else projected_width
+                    tile_height = int(projected_height / 3) if queue_object.highres_fix != 'Disabled' else projected_height
 
-                if response.ok:
-                    current_options = response.json()
-                    original_extra_noise = current_options.get("img2img_extra_noise", default_extra_noise)
-                    original_initial_noise = current_options.get("initial_noise_multiplier", default_initial_noise)
-                    logger.info("Original Extra Noise to restore after Details++: %s", original_extra_noise)
-                    logger.info("Original Initial Noise to restore after Details++: %s", original_initial_noise)
-                else:
-                    logger.warning("Error retrieving options before Details++ restore phase")
+                    # update the Extra Noise setting
+                    response = requests.get(url=f'{settings.global_var.url}/sdapi/v1/options')
 
-                if is_flux:
-                    option_payload = {"img2img_extra_noise": 0, "initial_noise_multiplier": 1.02}
-                else:
-                    option_payload = {"img2img_extra_noise": 0, "initial_noise_multiplier": 1.11}
+                    is_flux = "flux" in queue_object.data_model.lower()
 
-                response = s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=option_payload)
-                if response.ok:
-                    logger.info("Options updated successfully for Details++")
-                else:
-                    logger.warning("Error updating options for Details++")
+                    # Adapt noise values to model type
+                    if is_flux:
+                        default_extra_noise = 0.015
+                        default_initial_noise = 1
+                    else:
+                        default_extra_noise = 0.045
+                        default_initial_noise = 1
 
+                    if response.ok:
+                        current_options = response.json()
+                        original_extra_noise = current_options.get("img2img_extra_noise", default_extra_noise)
+                        original_initial_noise = current_options.get("initial_noise_multiplier", default_initial_noise)
+                        logger.info("Original Extra Noise to restore after Details++: %s", original_extra_noise)
+                        logger.info("Original Initial Noise to restore after Details++: %s", original_initial_noise)
+                    else:
+                        logger.warning("Error retrieving options before Details++ restore phase")
+                        original_extra_noise = default_extra_noise
+                        original_initial_noise = default_initial_noise
 
-                for index, generated_image_base64 in enumerate(generated_images):
-                    original_image = Image.open(io.BytesIO(base64.b64decode(generated_image_base64)))
-                    original_metadata = PngImagePlugin.PngInfo()
-                    for k, v in original_image.info.items():
-                        original_metadata.add_text(k, v)
-                    upscaled_images_metadata.append(original_metadata)
+                    if is_flux:
+                        option_payload = {"img2img_extra_noise": 0, "initial_noise_multiplier": 1.02}
+                    else:
+                        option_payload = {"img2img_extra_noise": 0, "initial_noise_multiplier": 1.11}
 
-                    # adjust steps
-                    steps_as_int = int(queue_object.steps)
-                    adjusted_steps = int(steps_as_int * 1.5)
+                    response = s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=option_payload)
+                    if response.ok:
+                        logger.info("Options updated successfully for Details++")
+                    else:
+                        logger.warning("Error updating options for Details++")
 
-                    upscale_payload = {
-                        "prompt": "(Sharp focus:2), " + queue_object.prompt,
-                        "negative_prompt": "(Undersaturated, washed colors), (blurry), (poorly drawn:2), " + queue_object.negative_prompt,
-                        "steps": adjusted_steps,
-                        "cfg_scale": queue_object.guidance_scale,
-                        "sampler_name": queue_object.sampler,
-                        "scheduler": queue_object.scheduler,
-                        "seed": queue_object.seed,
-                        "denoising_strength": denoising_strength,
-                        "script_name": "ultimate sd upscale",
-                        "script_args": [
-                            None,  # _ (not used)
-                            tile_width,  # tile_width
-                            tile_height,  # tile_height
-                            0,  # mask_blur
-                            448,  # padding
-                            64,  # seams_fix_width
-                            0.30,  # seams_fix_denoise
-                            256,  # seams_fix_padding
-                            6,  # upscaler_index
-                            True,  # save_upscaled_image a.k.a Upscaled
-                            0,  # redraw_mode
-                            False,  # save_seams_fix_image a.k.a Seams fix
-                            0,  # seams_fix_mask_blur
-                            0,  # seams_fix_type
-                            1,  # target_size_type
-                            queue_object.width,  # custom_width
-                            queue_object.height,  # custom_height
-                            custom_scale  # custom_scale
-                        ],
-                        "init_images": [
-                            generated_image_base64
-                        ]
-                    }
+                    for index, generated_image_base64 in enumerate(generated_images):
+                        original_image = Image.open(io.BytesIO(base64.b64decode(generated_image_base64)))
+                        original_metadata = PngImagePlugin.PngInfo()
+                        for k, v in original_image.info.items():
+                            original_metadata.add_text(k, v)
+                        upscaled_images_metadata.append(original_metadata)
 
-                    soft_inpainting_payload = {
-                        "Soft inpainting": True,
-                        "Schedule bias": 0.45,           # Encore plus tôt → plus progressif
-                        "Preservation strength": 0.14,   # Moins de préservation → plus de fondu/blend
-                        "Transition contrast boost": 0.8,# Réduit drastiquement le contraste dans la zone de transition
-                        "Mask influence": 0.5,           # Légèrement + d’importance au masque
-                        "Difference threshold": 0.19,    # Plus sensible aux petites différences
-                        "Difference contrast": 0.42,     # Encore + doux
-                    }
-                    upscale_payload["alwayson_scripts"] = {"soft inpainting": {"args": [soft_inpainting_payload]}}
+                        # Keep Details++ extra pass cheaper than base generation.
+                        steps_as_int = int(queue_object.steps)
+                        adjusted_steps = min(max(steps_as_int + 2, int(steps_as_int * details_steps_mult)), details_steps_cap)
 
-                    # Details ++
-                    if queue_object.adetailer == 'Details++':
-                        combined_alwayson_scripts_payload = {
-                            "ADetailer": {
-                                "args": [
-                                    True,
-                                    False,
-                                    {
-                                        "ad_model": "face_yolov8s.pt",
-                                        "ad_use_inpaint_width_height": True,
-                                        "ad_inpaint_width": 1024,
-                                        "ad_inpaint_height": 1024,
-                                        "ad_denoising_strength": 0.36,
-                                        "ad_noise_multiplier": 0.85,
-                                        "ad_dilate_erode": 4,
-                                        "ad_mask_max_ratio": 0.25,
-                                        "ad_mask_blur": 4,
-                                        "ad_inpaint_only_masked": True,
-                                        "ad_inpaint_only_masked_padding": 64,
-                                        "ad_x_offset": 24,
-                                        "ad_y_offset": 24,
-                                        "ad_prompt": "(extremely detailed face), (round pupils,  detailed eyes), raytracing, subsurface scattering, hyperrealistic, extreme skin details, skin pores, deep shadows, subsurface scattering, amazing textures, filmic, macro, shallow dof, shallow depth of field, beautiful eyes, extremely detailed pupil, " + queue_object.prompt,
-                                        "ad_negative_prompt": "(low quality:2), (asymmetric eyes, bad eyes:2), lowres, (heterochromia:2)"
-                                    },
-                                    {
-                                        "ad_model": "hand_yolov8n.pt",
-                                        "ad_use_inpaint_width_height": True,
-                                        "ad_inpaint_width": 1024,
-                                        "ad_inpaint_height": 1024,
-                                        "ad_denoising_strength": 0.45,
-                                        "ad_noise_multiplier": 0.85,
-                                        "ad_dilate_erode": 4,
-                                        "ad_mask_max_ratio": 0.15,
-                                        "ad_mask_blur": 4,
-                                        "ad_inpaint_only_masked": True,
-                                        "ad_inpaint_only_masked_padding": 64,
-                                        "ad_x_offset": 24,
-                                        "ad_y_offset": 24,
-                                        #"ad_use_noise_multiplier": True,
-                                        #"ad_noise_multiplier": 1.03,
-                                        "ad_prompt": "(extremely detailed hand), (extremely detailed fingers), natural nails color, " + queue_object.prompt,
-                                        "ad_negative_prompt": "(low quality:2), (malformed:2), lowres, colored nails, undetailed hand, fused fingers, elongated fingers, wrong hand anatomy, additionnal fingers, missing fingers, inversed hand"
-                                    }#,
-                                    #{
-                                    #    "ad_model": "yolov8x-oiv7.pt",
-                                    #    "ad_model_classes": "",
-                                    #    "ad_use_inpaint_width_height": True,
-                                    #    "ad_inpaint_width": 1024,
-                                    #    "ad_inpaint_height": 1024,
-                                    #    "ad_denoising_strength": 0.32,
-                                    #    "ad_dilate_erode": 4,
-                                    #    "ad_mask_max_ratio": 0.75,
-                                    #    "ad_mask_blur": 4,
-                                    #    "ad_inpaint_only_masked": True,
-                                    #    "ad_inpaint_only_masked_padding": 96,
-                                    #    #"ad_use_noise_multiplier": True,
-                                    #    #"ad_noise_multiplier": 1.03,
-                                    #    "ad_prompt": "(extremely detailed:2), " + queue_object.prompt,
-                                    #    #"ad_negative_prompt": "(low quality:2), (malformed:2), lowres, colored nails, undetailed hand, fused fingers, elongated fingers, wrong hand anatomy, additionnal fingers, missing fingers, inversed hand"
-                                    #}
-                                ]
-                            }
+                        upscale_payload = {
+                            "prompt": "(Sharp focus:2), " + queue_object.prompt,
+                            "negative_prompt": "(Undersaturated, washed colors), (blurry), (poorly drawn:2), " + queue_object.negative_prompt,
+                            "steps": adjusted_steps,
+                            "cfg_scale": queue_object.guidance_scale,
+                            "sampler_name": queue_object.sampler,
+                            "scheduler": queue_object.scheduler,
+                            "seed": queue_object.seed,
+                            "denoising_strength": details_denoising_strength,
+                            "script_name": "ultimate sd upscale",
+                            "script_args": [
+                                None,  # _ (not used)
+                                tile_width,  # tile_width
+                                tile_height,  # tile_height
+                                0,  # mask_blur
+                                320,  # padding
+                                48,  # seams_fix_width
+                                0.24,  # seams_fix_denoise
+                                128,  # seams_fix_padding
+                                6,  # upscaler_index
+                                True,  # save_upscaled_image a.k.a Upscaled
+                                0,  # redraw_mode
+                                False,  # save_seams_fix_image a.k.a Seams fix
+                                0,  # seams_fix_mask_blur
+                                0,  # seams_fix_type
+                                1,  # target_size_type
+                                projected_width,  # custom_width
+                                projected_height,  # custom_height
+                                details_custom_scale  # custom_scale
+                            ],
+                            "init_images": [
+                                generated_image_base64
+                            ]
                         }
 
-                        #if queue_object.highres_fix != 'Disabled':
-                        #    soft_inpainting_payload = {
-                        #        "Soft inpainting": True,
-                        #        "Schedule bias": 1,
-                        #        "Preservation strength": 0.5,
-                        #        "Transition contrast boost": 4,
-                        #        "Mask influence": 0,
-                        #        "Difference threshold": 0.5,
-                        #        "Difference contrast": 2,
-                        #    }
-                        #    combined_alwayson_scripts_payload["soft inpainting"] = {"args": [soft_inpainting_payload]}
+                        soft_inpainting_payload = {
+                            "Soft inpainting": True,
+                            "Schedule bias": 0.40,
+                            "Preservation strength": 0.18,
+                            "Transition contrast boost": 0.7,
+                            "Mask influence": 0.45,
+                            "Difference threshold": 0.19,
+                            "Difference contrast": 0.38,
+                        }
+                        upscale_payload["alwayson_scripts"] = {"soft inpainting": {"args": [soft_inpainting_payload]}}
 
-                        #upscale_payload["alwayson_scripts"] = combined_alwayson_scripts_payload
+                        # Send payload to img2img
+                        upscale_response = s.post(url=f'{settings.global_var.url}/sdapi/v1/img2img', json=upscale_payload)
+                        if upscale_response.ok:
+                            upscale_response_data = upscale_response.json()
+                            upscaled_images = upscale_response_data.get("images")
+                            for upscaled_image_base64 in upscaled_images:
+                                upscaled_image = Image.open(io.BytesIO(base64.b64decode(upscaled_image_base64)))
+                                metadata = upscaled_images_metadata[index]
+                                buffered = io.BytesIO()
+                                upscaled_image.save(buffered, format="PNG", pnginfo=metadata)
+                                upscaled_image_with_metadata_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                                upscaled_images_data.append(upscaled_image_with_metadata_base64)
+                        else:
+                            logger.warning("Error while upscaling with ultimate_sd_upscale")
 
-                    # Send payload to img2img
-                    upscale_response = s.post(url=f'{settings.global_var.url}/sdapi/v1/img2img', json=upscale_payload)
-                    if upscale_response.ok:
-                        upscale_response_data = upscale_response.json()
-                        upscaled_images = upscale_response_data.get("images")
-                        for upscaled_image_base64 in upscaled_images:
-                            upscaled_image = Image.open(io.BytesIO(base64.b64decode(upscaled_image_base64)))
-                            metadata = upscaled_images_metadata[index]
-                            buffered = io.BytesIO()
-                            upscaled_image.save(buffered, format="PNG", pnginfo=metadata)
-                            upscaled_image_with_metadata_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-                            upscaled_images_data.append(upscaled_image_with_metadata_base64)
+                    if upscaled_images_data:
+                        response_data["images"] = upscaled_images_data
                     else:
-                        logger.warning("Error while upscaling with ultimate_sd_upscale")
+                        logger.warning("Details++ extra pass returned no images; keeping base images.")
 
-                response_data["images"] = upscaled_images_data
-
-                # restore the original extra noise
-                restore_payload = {
-                    "img2img_extra_noise": original_extra_noise,
-                    "initial_noise_multiplier": original_initial_noise
-                }
-                response = requests.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=restore_payload)
-                if response.ok:
-                    logger.info("Options restored successfully to %s & %s", original_extra_noise, original_initial_noise)
+                    # restore the original extra noise
+                    restore_payload = {
+                        "img2img_extra_noise": original_extra_noise,
+                        "initial_noise_multiplier": original_initial_noise
+                    }
+                    response = requests.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=restore_payload)
+                    if response.ok:
+                        logger.info("Options restored successfully to %s & %s", original_extra_noise, original_initial_noise)
+                    else:
+                        logger.warning("Error restoring options after Details++")
                 else:
-                    logger.warning("Error restoring options after Details++")
+                    logger.warning(
+                        "Details++ extra pass skipped to protect performance/output size. projected=%sx%s max_side=%s max_pixels=%s",
+                        projected_width,
+                        projected_height,
+                        details_max_side,
+                        details_max_pixels,
+                    )
 
             end_time = time.time()
 
