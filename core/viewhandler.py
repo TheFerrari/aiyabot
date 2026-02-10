@@ -428,10 +428,10 @@ class DrawView(View):
                 upscale_menu.callback = upscale_menu.callback
                 self.add_item(upscale_menu)
 
-    # the 🖋 button will allow a new prompt and keep same parameters for everything else
+    # the ?? button will allow a new prompt and keep same parameters for everything else
     @discord.ui.button(
         custom_id="button_re-prompt",
-        emoji="🖋",
+        emoji="??",
         label="Edit")
     async def button_draw(self, button, interaction):
         buttons_free = True
@@ -451,7 +451,7 @@ class DrawView(View):
                 else:
                     await interaction.response.send_modal(DrawModal(self.input_tuple))
             else:
-                await interaction.response.send_message("You can't use other people's 🖋!", ephemeral=True)
+                await interaction.response.send_message("You can't use other people's ??!", ephemeral=True)
         except Exception as e:
             logger.exception('The pen button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
@@ -459,10 +459,10 @@ class DrawView(View):
             await interaction.response.edit_message(view=self)
             await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
 
-    # the 🎲 button will take the same parameters for the image, change the seed, and add a task to the queue
+    # the ?? button will take the same parameters for the image, change the seed, and add a task to the queue
     @discord.ui.button(
         custom_id="button_re-roll",
-        emoji="🎲",
+        emoji="??",
         label="Re-roll")
     async def button_roll(self, button, interaction):
         buttons_free = True
@@ -509,7 +509,7 @@ class DrawView(View):
                         f'``{len(queuehandler.GlobalQueue.queue)}`` - ``{seed_tuple[1]}``'
                         f'\nNew Seed:``{seed_tuple[10]}``')
             else:
-                await interaction.response.send_message("You can't use other people's 🎲!", ephemeral=True)
+                await interaction.response.send_message("You can't use other people's ??!", ephemeral=True)
         except Exception as e:
             logger.exception('The dice roll button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
@@ -517,10 +517,10 @@ class DrawView(View):
             await interaction.response.edit_message(view=self)
             await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
 
-    # the ⬆️ button will upscale the selected image
+    # the ?? button will upscale the selected image
     @discord.ui.button(
     custom_id="button_upscale",
-    emoji="⬆️",
+    emoji="??",
     label="Upscale")
     async def button_upscale(self, button, interaction):
         buttons_free = True
@@ -560,7 +560,7 @@ class DrawView(View):
                             f'<@{interaction.user.id}>, {settings.messages()}\nQueue: '
                             f'``{len(queuehandler.GlobalQueue.queue)}`` - Upscaling')
             else:
-                await interaction.response.send_message("You can't use other people's ⬆️!", ephemeral=True)
+                await interaction.response.send_message("You can't use other people's ??!", ephemeral=True)
         except Exception as e:
             logger.exception('The upscale button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
@@ -602,7 +602,7 @@ class DrawView(View):
 
     @discord.ui.button(
         custom_id="button_highres_fix",
-        emoji="🧩",
+        emoji="??",
         label="Highres Fix",
         row=1)
     async def button_highres_fix(self, button, interaction):
@@ -636,7 +636,7 @@ class DrawView(View):
 
     @discord.ui.button(
         custom_id="button_apply_details",
-        emoji="✨",
+        emoji="?",
         label="Details++",
         row=1)
     async def button_apply_details(self, button, interaction):
@@ -669,10 +669,43 @@ class DrawView(View):
             await interaction.response.edit_message(view=self)
             await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
 
-    # the 📋 button will let you review the parameters of the generation
+    @discord.ui.button(
+        custom_id="button_faces_hands",
+        label="Faces+Hands",
+        row=1)
+    async def button_faces_hands(self, button, interaction):
+        buttons_free = True
+        try:
+            if settings.global_var.restrict_buttons == 'True':
+                if interaction.user.id != self.input_tuple[0].author.id:
+                    buttons_free = False
+            if not buttons_free:
+                await interaction.response.send_message("You can't use this button for others' images!", ephemeral=True)
+                return
+
+            new_input = list(self.input_tuple)
+            new_input[19] = 'Faces+Hands'
+            new_input[15] = 'Disabled'
+            input_tuple = tuple(new_input)
+            logger.info(
+                'Faces+Hands -- %s#%s -- Prompt: %s -- highres_fix=%s -- seed=%s',
+                interaction.user.name,
+                interaction.user.discriminator,
+                input_tuple[1],
+                input_tuple[15],
+                input_tuple[10],
+            )
+            await self._enqueue_draw_variant(interaction, input_tuple, "ADetailer", "Faces+Hands (no Highres Fix)")
+        except Exception as e:
+            logger.exception('The Faces+Hands button broke: %s', e)
+            button.disabled = True
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
+
+    # the ?? button will let you review the parameters of the generation
     @discord.ui.button(
         custom_id="button_review",
-        emoji="📋",
+        emoji="??",
         label="Review")
     async def button_review(self, button, interaction):
         logger.debug("Button review clicked.")
@@ -719,7 +752,7 @@ class DrawView(View):
     # the button to delete generated images
     @discord.ui.button(
         custom_id="button_x",
-        emoji="❌",
+        emoji="?",
         label="Delete")
     async def delete(self, button, interaction):
         try:
@@ -728,7 +761,7 @@ class DrawView(View):
             button.disabled = True
             await interaction.response.edit_message(view=self)
             await interaction.followup.send("I may have been restarted. This button no longer works.\n"
-                                            "You can react with ❌ to delete the image.", ephemeral=True)
+                                            "You can react with ? to delete the image.", ephemeral=True)
 
 class DeleteView(View):
     def __init__(self, input_tuple):
@@ -840,3 +873,4 @@ class UpscaleMenu(discord.ui.Select):
             self.disabled = True
             await interaction.response.edit_message(view=self.view)
             await interaction.followup.send("I may have been restarted. This button no longer works.\n", ephemeral=True)
+
