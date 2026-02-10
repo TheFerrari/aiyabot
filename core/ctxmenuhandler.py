@@ -194,12 +194,12 @@ async def parse_image_info(ctx, image_url, command, init_url=None):
         if style:
             copy_command += f' styles:{style[0]}'
             extra_params += f'\nStyle preset: ``{style[0]}``'
-        if adetailer:
-            copy_command += f' adetailer:{adetailer}'
-            extra_params += f'\nADetailer: ``{adetailer}``'
-        if highres_fix:
-            copy_command += f' highres_fix:{highres_fix}'
-            extra_params += f'\nHigh-res fix: ``{highres_fix}``'
+        #if adetailer:
+        #    copy_command += f' adetailer:{adetailer}'
+        #    extra_params += f'\nADetailer: ``{adetailer}``'
+        #if highres_fix:
+        #    copy_command += f' highres_fix:{highres_fix}'
+        #    extra_params += f'\nHigh-res fix: ``{highres_fix}``'
         if clip_skip:
             copy_command += f' clip_skip:{clip_skip}'
             extra_params += f'\nCLIP skip: ``{clip_skip}``'
