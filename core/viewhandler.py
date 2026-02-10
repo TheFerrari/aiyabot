@@ -638,8 +638,8 @@ class DrawView(View):
                     def __init__(self, channel_id):
                         self.channel = FakeChannel(channel_id)
                 
-            # Use the interaction's channel ID as fallback
-            ctx = FakeCtx(interaction.channel_id)
+                # Use the interaction's channel ID as fallback
+                ctx = FakeCtx(interaction.channel_id)
             
             logger.info(
                 "button_review parse request: user_id=%s attachment_url=%s has_init_url=%s",
