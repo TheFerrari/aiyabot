@@ -167,7 +167,7 @@ class DrawModal(Modal):
         # expose each available (supported) option, even if output didn't use them
         ex_params = f'data_model:{display_name}'
         for index, value in enumerate(tuple_names[index_start:], index_start):
-            if index == 10 or 12 <= index <= 13 or index == 15:
+            if index == 10 or 12 <= index <= 13 or index == 15 or index == 19:
                 continue
             ex_params += f'\n{value}:{input_tuple[index]}'
 
@@ -183,6 +183,9 @@ class DrawModal(Modal):
     async def callback(self, interaction: discord.Interaction):
         # update the tuple with new prompts
         pen = list(self.input_tuple)
+        # reset enhancements so Edit redraw starts from a neutral state unless user explicitly sets them
+        pen[15] = 'Disabled'
+        pen[19] = 'None'
         # dedup ensures that if user added lora/hypernet manually to edited prompt
         # it is not duplicated from previous "non-simple" prompt on replacement
         pen[2] = settings.extra_net_dedup(pen[2].replace(pen[1], self.children[0].value))
@@ -472,11 +475,21 @@ class DrawView(View):
                 # update the tuple with a new seed
                 new_seed = list(self.input_tuple)
                 new_seed[10] = random.randint(0, 0xFFFFFFFF)
+                # reset enhancements so reroll doesn't keep Highres/ADetailer
+                new_seed[15] = 'Disabled'
+                new_seed[19] = 'None'
                 # set batch to 1
                 if settings.global_var.batch_buttons == "False":
                     new_seed[13] = [1, 1]
                 seed_tuple = tuple(new_seed)
 
+                logger.info(
+                    'Reroll reset enhancements -- %s#%s -- highres_fix=%s adetailer=%s',
+                    interaction.user.name,
+                    interaction.user.discriminator,
+                    seed_tuple[15],
+                    seed_tuple[19],
+                )
                 logger.info('Reroll -- %s#%s -- Prompt: %s', interaction.user.name, interaction.user.discriminator, seed_tuple[1])
 
                 # set up the draw dream and do queue code again for lack of a more elegant solution
