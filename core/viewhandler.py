@@ -431,7 +431,6 @@ class DrawView(View):
     # the ?? button will allow a new prompt and keep same parameters for everything else
     @discord.ui.button(
         custom_id="button_re-prompt",
-        emoji="??",
         label="Edit")
     async def button_draw(self, button, interaction):
         buttons_free = True
@@ -451,7 +450,7 @@ class DrawView(View):
                 else:
                     await interaction.response.send_modal(DrawModal(self.input_tuple))
             else:
-                await interaction.response.send_message("You can't use other people's ??!", ephemeral=True)
+                await interaction.response.send_message("You can't use other people's Edit button!", ephemeral=True)
         except Exception as e:
             logger.exception('The pen button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
@@ -462,7 +461,6 @@ class DrawView(View):
     # the ?? button will take the same parameters for the image, change the seed, and add a task to the queue
     @discord.ui.button(
         custom_id="button_re-roll",
-        emoji="??",
         label="Re-roll")
     async def button_roll(self, button, interaction):
         buttons_free = True
@@ -509,7 +507,7 @@ class DrawView(View):
                         f'``{len(queuehandler.GlobalQueue.queue)}`` - ``{seed_tuple[1]}``'
                         f'\nNew Seed:``{seed_tuple[10]}``')
             else:
-                await interaction.response.send_message("You can't use other people's ??!", ephemeral=True)
+                await interaction.response.send_message("You can't use other people's Re-roll button!", ephemeral=True)
         except Exception as e:
             logger.exception('The dice roll button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
@@ -520,7 +518,6 @@ class DrawView(View):
     # the ?? button will upscale the selected image
     @discord.ui.button(
     custom_id="button_upscale",
-    emoji="??",
     label="Upscale")
     async def button_upscale(self, button, interaction):
         buttons_free = True
@@ -560,7 +557,7 @@ class DrawView(View):
                             f'<@{interaction.user.id}>, {settings.messages()}\nQueue: '
                             f'``{len(queuehandler.GlobalQueue.queue)}`` - Upscaling')
             else:
-                await interaction.response.send_message("You can't use other people's ??!", ephemeral=True)
+                await interaction.response.send_message("You can't use other people's Upscale button!", ephemeral=True)
         except Exception as e:
             logger.exception('The upscale button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
@@ -602,7 +599,6 @@ class DrawView(View):
 
     @discord.ui.button(
         custom_id="button_highres_fix",
-        emoji="??",
         label="Highres Fix",
         row=1)
     async def button_highres_fix(self, button, interaction):
@@ -636,7 +632,6 @@ class DrawView(View):
 
     @discord.ui.button(
         custom_id="button_apply_details",
-        emoji="?",
         label="Details++",
         row=1)
     async def button_apply_details(self, button, interaction):
@@ -705,7 +700,6 @@ class DrawView(View):
     # the ?? button will let you review the parameters of the generation
     @discord.ui.button(
         custom_id="button_review",
-        emoji="??",
         label="Review")
     async def button_review(self, button, interaction):
         logger.debug("Button review clicked.")
@@ -752,7 +746,6 @@ class DrawView(View):
     # the button to delete generated images
     @discord.ui.button(
         custom_id="button_x",
-        emoji="?",
         label="Delete")
     async def delete(self, button, interaction):
         try:

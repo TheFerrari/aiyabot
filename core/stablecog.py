@@ -964,6 +964,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                     view=post_queue_object.view
                 )
             except discord.HTTPException as e:
+                logger.exception("Failed to send generated image to Discord: %s", e)
                 if e.code == 40005 or "Payload Too Large" in str(e):
                     file = post_queue_object.file
                     file_size_mb = None
