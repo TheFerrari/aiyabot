@@ -1186,7 +1186,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
             # hires payload
             if queue_object.highres_fix != 'Disabled':
-                upscale_ratio = 1.3
+                upscale_ratio = 1.2
                 base_steps = max(1, int(float(queue_object.steps)))
                 hr_second_pass_steps = max(1, base_steps // 2)
                 queue_object.width = int(queue_object.width * upscale_ratio)
