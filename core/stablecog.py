@@ -515,6 +515,18 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                             batch: Optional[str] = None):
 
         called_from_button = getattr(ctx, 'called_from_button', False)
+        logger.info(
+            "/draw received: user_id=%s channel_id=%s called_from_button=%s prompt_len=%s has_negative=%s has_init_image=%s has_init_url=%s random_prompt=%s random_style=%s",
+            ctx.author.id,
+            ctx.channel.id,
+            called_from_button,
+            len(prompt) if prompt else 0,
+            bool(negative_prompt),
+            bool(init_image),
+            bool(init_url),
+            random_prompt,
+            random_style,
+        )
 
         # check if one of prompt or random_prompt option is enabled
         if not prompt and not random_prompt:
@@ -713,7 +725,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         if init_url:
             try:
                 init_image = requests.get(init_url)
+                logger.info("init_url override applied successfully: init_url=%s", init_url)
             except(Exception,):
+                logger.warning("init_url override failed, URL not reachable: init_url=%s", init_url)
                 await ctx.send_response('URL image not found!\nI will do my best without it!')
 
         # size_ratio preset will override height and width
@@ -827,6 +841,24 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         input_tuple = (
             ctx, simple_prompt, prompt, negative_prompt, data_model, steps, width, height, guidance_scale, sampler, seed, strength,
             init_image, batch, styles, highres_fix, clip_skip, extra_net, epoch_time, adetailer, scheduler, distilled_cfg_scale)# poseref, ipadapter
+        logger.info(
+            "/draw normalized params: steps=%s size=%sx%s guidance_scale=%s distilled_cfg_scale=%s sampler=%s scheduler=%s seed=%s strength=%s styles=%s adetailer=%s clip_skip=%s batch=%s extra_net=%s has_init_image=%s",
+            steps,
+            width,
+            height,
+            guidance_scale,
+            distilled_cfg_scale,
+            sampler,
+            scheduler,
+            seed,
+            strength,
+            styles,
+            adetailer,
+            clip_skip,
+            batch,
+            extra_net,
+            bool(init_image),
+        )
 
         view = viewhandler.DrawView(input_tuple)
         # setup the queue

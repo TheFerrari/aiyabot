@@ -47,7 +47,13 @@ def style_remove(search, field):
 async def parse_image_info(ctx, image_url, command, init_url=None):
     message = ''
     try:
-        logger.info("parse_image_info start: command=%s image_url=%s", command, image_url)
+        logger.info(
+            "parse_image_info start: command=%s image_url=%s has_init_url=%s channel_id=%s",
+            command,
+            image_url,
+            bool(init_url),
+            getattr(getattr(ctx, "channel", None), "id", None),
+        )
         # construct a payload
         image = base64.b64encode(requests.get(image_url, stream=True).content).decode('utf-8')
         payload = {
@@ -132,6 +138,16 @@ async def parse_image_info(ctx, image_url, command, init_url=None):
                 strength = line.split(': ', 1)[1]
 
         width_height = size.split("x")
+        logger.info(
+            "parse_image_info parsed params: steps=%s size=%s guidance_scale=%s sampler=%s scheduler=%s seed=%s strength=%s",
+            steps,
+            size,
+            guidance_scale,
+            sampler,
+            scheduler,
+            seed,
+            strength if strength else "<empty>",
+        )
 
         # try to find the model name and activator token
         for model in settings.global_var.model_info.items():
@@ -215,6 +231,12 @@ async def parse_image_info(ctx, image_url, command, init_url=None):
 
         embed.add_field(name=f'Command for copying', value=f'', inline=False)
         embed.set_footer(text=copy_command)
+        logger.info(
+            "parse_image_info copy command generated: command=%s length=%s preview=%s",
+            command,
+            len(copy_command),
+            copy_command[:350],
+        )
 
         if command == 'button':
             logger.info("parse_image_info completed for button command")
