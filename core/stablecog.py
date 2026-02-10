@@ -1562,10 +1562,10 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             else:
                 content = f'<@{queue_object.ctx.author.id}>, {message}'
                 # Apply adaptive color correction + sharpening if Details++ is selected
-                if getattr(queue_object, "adetailer", None) == 'Details++':
-                    # Resize first (optionnel selon workflow)
-                    image = image.resize((int(queue_object.width * 0.75), int(queue_object.height * 0.75)))
-                    image = apply_color_correction(image)
+                #if getattr(queue_object, "adetailer", None) == 'Details++':
+                #    # Resize first (optionnel selon workflow)
+                #    image = image.resize((int(queue_object.width * 0.75), int(queue_object.height * 0.75)))
+                #    image = apply_color_correction(image)
                 filename = f'{queue_object.seed}-{count}.png'
                 file = add_metadata_to_image(image, str_parameters, filename)
                 queuehandler.process_post(
