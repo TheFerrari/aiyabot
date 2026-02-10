@@ -428,9 +428,10 @@ class DrawView(View):
                 upscale_menu.callback = upscale_menu.callback
                 self.add_item(upscale_menu)
 
-    # the ?? button will allow a new prompt and keep same parameters for everything else
+    # the 🖊️ button will allow a new prompt and keep same parameters for everything else
     @discord.ui.button(
         custom_id="button_re-prompt",
+        emoji="🖊️",
         label="Edit")
     async def button_draw(self, button, interaction):
         buttons_free = True
@@ -458,9 +459,10 @@ class DrawView(View):
             await interaction.response.edit_message(view=self)
             await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
 
-    # the ?? button will take the same parameters for the image, change the seed, and add a task to the queue
+    # the 🎲 button will take the same parameters for the image, change the seed, and add a task to the queue
     @discord.ui.button(
         custom_id="button_re-roll",
+        emoji="🎲",
         label="Re-roll")
     async def button_roll(self, button, interaction):
         buttons_free = True
@@ -518,6 +520,7 @@ class DrawView(View):
     # the ?? button will upscale the selected image
     @discord.ui.button(
     custom_id="button_upscale",
+    emoji="⬆️",
     label="Upscale")
     async def button_upscale(self, button, interaction):
         buttons_free = True
@@ -599,6 +602,7 @@ class DrawView(View):
 
     @discord.ui.button(
         custom_id="button_highres_fix",
+        emoji="🧩",
         label="Highres Fix",
         row=1)
     async def button_highres_fix(self, button, interaction):
@@ -632,6 +636,7 @@ class DrawView(View):
 
     @discord.ui.button(
         custom_id="button_apply_details",
+        emoji="✨",
         label="Details++",
         row=1)
     async def button_apply_details(self, button, interaction):
@@ -666,6 +671,7 @@ class DrawView(View):
 
     @discord.ui.button(
         custom_id="button_faces_hands",
+        emoji="🤗",
         label="Faces+Hands",
         row=1)
     async def button_faces_hands(self, button, interaction):
@@ -700,6 +706,7 @@ class DrawView(View):
     # the ?? button will let you review the parameters of the generation
     @discord.ui.button(
         custom_id="button_review",
+        emoji="📋",
         label="Review")
     async def button_review(self, button, interaction):
         logger.debug("Button review clicked.")
@@ -746,6 +753,7 @@ class DrawView(View):
     # the button to delete generated images
     @discord.ui.button(
         custom_id="button_x",
+        emoji="❌",
         label="Delete")
     async def delete(self, button, interaction):
         try:
