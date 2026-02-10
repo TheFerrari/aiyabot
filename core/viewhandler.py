@@ -641,7 +641,7 @@ class DrawView(View):
                 # Use the interaction's channel ID as fallback
                 ctx = FakeCtx(interaction.channel_id)
             
-            embed = await ctxmenuhandler.parse_image_info(ctx, attachment.url, "button")
+            embed = await ctxmenuhandler.parse_image_info(ctx, attachment.url, "button", init_url=init_url)
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             logger.exception("The clipboard button broke: %s", e)

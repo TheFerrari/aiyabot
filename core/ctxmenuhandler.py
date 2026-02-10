@@ -44,7 +44,7 @@ def style_remove(search, field):
     return field.strip(',')
 
 
-async def parse_image_info(ctx, image_url, command):
+async def parse_image_info(ctx, image_url, command, init_url=None):
     message = ''
     try:
         logger.info("parse_image_info start: command=%s image_url=%s", command, image_url)
@@ -74,9 +74,9 @@ async def parse_image_info(ctx, image_url, command):
         # initialize extra params
         steps, size, guidance_scale, sampler, scheduler, seed = '', '', '', '', '', ''
         style, adetailer, highres_fix, clip_skip = '', None, '', ''
-        strength, distilled_cfg_scale, has_init_url = '', '', False # poseref, ipadapter
-        if command == 'button' and ctx is not None:
-            has_init_url = True
+        strength, distilled_cfg_scale = '', '' # poseref, ipadapter
+        has_init_url = bool(init_url)
+        hide_thumbnail = command == 'button'
 
         distilled_cfg_scale = settings.read(str(ctx.channel.id)).get('distilled_cfg_scale', '3.5')
 
@@ -151,7 +151,7 @@ async def parse_image_info(ctx, image_url, command):
 
         # create embed and give the best effort in trying to parse the png info
         embed = discord.Embed(title="About the image!", description="")
-        if not has_init_url:  # for some reason this bugs out the embed
+        if not hide_thumbnail:  # for some reason this bugs out the embed in button flow
             embed.set_thumbnail(url=image_url)
         if len(prompt_field) > 1024:
             prompt_field = f'{prompt_field[:1010]}....'
@@ -203,7 +203,9 @@ async def parse_image_info(ctx, image_url, command):
 
         if has_init_url:
             # not interested in adding embed fields for strength and init_image
-            copy_command += f' strength:{strength} init_url:{str(ctx)}'
+            if strength:
+                copy_command += f' strength:{strength}'
+            copy_command += f' init_url:{init_url}'
         #if poseref:
         #    copy_command += f' poseref:{poseref}'
         #    extra_params += f'\nPose Reference URL: ``{poseref}``'
