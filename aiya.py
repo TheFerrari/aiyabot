@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from core.queuehandler import GlobalQueue
 from monitoring.power_monitor import PowerMonitor
 from monitoring.windows_power_reader import (
+    env_hwinfo_debug_reader,
     env_hwinfo_snapshot_reader,
     env_power_reader,
     env_temperature_reader,
@@ -32,6 +33,7 @@ bot.logger = get_logger(__name__)
 power_monitor = None
 temperature_reader = None
 hwinfo_snapshot_reader = None
+hwinfo_debug_reader = None
 enable_power_monitor = os.getenv("ENABLE_POWER_MONITOR", "False").lower() in ("true", "1", "t")
 if enable_power_monitor:
     try:
@@ -41,11 +43,13 @@ if enable_power_monitor:
         )
         temperature_reader = env_temperature_reader()
         hwinfo_snapshot_reader = env_hwinfo_snapshot_reader()
+        hwinfo_debug_reader = env_hwinfo_debug_reader()
     except Exception as e:
-        print(f"⚠️  No se pudo inicializar PowerMonitor: {e}")
+        print(f"Warning: failed to initialize PowerMonitor: {e}")
         power_monitor = None
         temperature_reader = None
         hwinfo_snapshot_reader = None
+        hwinfo_debug_reader = None
 
 # Startup checks
 try:
@@ -114,22 +118,37 @@ async def ping(ctx):
     await ctx.respond(content=f'<@{ctx.author.id}>', embed=embed, delete_after=10)
 
 
-@bot.slash_command(name='power', description='Muestra métricas de consumo energético del host')
+@bot.slash_command(name='power', description='Show host power and thermal metrics')
 async def power(ctx):
     if power_monitor is None:
         await ctx.respond(
-            "Power monitor deshabilitado. Activa ENABLE_POWER_MONITOR=True en .env",
+            "Power monitor is disabled. Set ENABLE_POWER_MONITOR=True in .env",
             delete_after=20,
         )
         return
 
+    mode = os.getenv("POWER_READER", "hwinfo_csv")
+    csv_path = os.getenv("HWINFO_CSV_PATH", "")
+    bot.logger.info(
+        f"[power] user={ctx.author} mode={mode} csv_path={csv_path} sample_interval={os.getenv('POWER_SAMPLE_INTERVAL_S', '5')}"
+    )
+
     stats = power_monitor.get_stats()
+
+    debug_info = {}
+    if hwinfo_debug_reader is not None:
+        try:
+            debug_info = hwinfo_debug_reader() or {}
+        except Exception as e:
+            debug_info = {"debug_reader_error": str(e)}
+    if debug_info:
+        bot.logger.info(f"[power-debug] {debug_info}")
 
     if stats["current_w"] is None:
         description = (
-            "Aún sin lectura utilizable.\n"
-            "Si usas batería, espera una ventana de muestreo.\n"
-            "También puedes probar POWER_READER=mock o revisar tu log de HWiNFO."
+            "No usable power reading yet.\n"
+            "Check the bot logs for [power-debug] details.\n"
+            "You can also test with POWER_READER=mock."
         )
     else:
         snapshot = {}
@@ -144,18 +163,18 @@ async def power(ctx):
             try:
                 temp_c = temperature_reader()
                 if temp_c is not None:
-                    temp_line = f"Temp: `{temp_c:.1f} °C`\n"
+                    temp_line = f"Temp: `{temp_c:.1f} C`\n"
             except Exception:
                 temp_line = ""
 
         extra_lines = ""
         if snapshot:
             if snapshot.get("cpu_temp_c") is not None:
-                extra_lines += f"CPU Temp: `{snapshot['cpu_temp_c']:.1f} °C`\n"
+                extra_lines += f"CPU Temp: `{snapshot['cpu_temp_c']:.1f} C`\n"
             if snapshot.get("gpu_temp_c") is not None:
-                extra_lines += f"GPU Temp: `{snapshot['gpu_temp_c']:.1f} °C`\n"
+                extra_lines += f"GPU Temp: `{snapshot['gpu_temp_c']:.1f} C`\n"
             if snapshot.get("soc_temp_c") is not None:
-                extra_lines += f"SoC Temp: `{snapshot['soc_temp_c']:.1f} °C`\n"
+                extra_lines += f"SoC Temp: `{snapshot['soc_temp_c']:.1f} C`\n"
             if snapshot.get("cpu_package_power_w") is not None:
                 extra_lines += f"CPU Pkg: `{snapshot['cpu_package_power_w']:.2f} W`\n"
             if snapshot.get("gpu_asic_power_w") is not None:
@@ -201,7 +220,7 @@ async def on_ready():
     await bot.sync_commands()
     if power_monitor is not None:
         power_monitor.start_background()
-        bot.logger.info("PowerMonitor iniciado en segundo plano")
+        bot.logger.info("PowerMonitor started in background mode")
     for guild in bot.guilds:
         print(f"I'm active in {guild.id} a.k.a {guild}!")
 

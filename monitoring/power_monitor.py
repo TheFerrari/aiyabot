@@ -5,10 +5,10 @@ from typing import Callable, Optional, Dict, Any
 
 class PowerMonitor:
     """
-    Monitor genérico de consumo de energía.
+    Generic power consumption monitor.
 
-    - power_reader: función sin argumentos que devuelve Watts (float) o None.
-    - sample_interval: segundos entre lecturas cuando se usa el modo en segundo plano.
+    - power_reader: zero-argument callable returning Watts (float) or None.
+    - sample_interval: seconds between reads in background mode.
     """
 
     def __init__(self, power_reader: Callable[[], Optional[float]], sample_interval: float = 1.0):
@@ -19,31 +19,31 @@ class PowerMonitor:
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
-        # Estado interno
+        # Internal state
         self._start_time: Optional[float] = None
         self._last_time: Optional[float] = None
         self._last_watts: Optional[float] = None
 
         self._min_w: Optional[float] = None
         self._max_w: Optional[float] = None
-        self._energy_Wh: float = 0.0  # energía acumulada en Wh
+        self._energy_Wh: float = 0.0  # accumulated energy in Wh
 
-    # -------------------- MODO MANUAL / INTERNO --------------------
+    # -------------------- MANUAL / INTERNAL MODE --------------------
 
     def _step(self, now: float) -> None:
-        """Un paso de actualización: lee potencia y actualiza integrales."""
+        """Single update step: read power and update aggregates."""
         try:
             watts = self.power_reader()
         except Exception:
-            # Evita que el hilo de monitoreo termine por errores transitorios del reader.
+            # Keep monitoring alive on transient reader failures.
             return
         if watts is None:
-            # Si no hay lectura, simplemente no integramos nada
+            # No reading available, skip integration for this step.
             return
 
         with self._lock:
             if self._start_time is None:
-                # Primera lectura
+                # First reading
                 self._start_time = now
                 self._last_time = now
                 self._last_watts = watts
@@ -51,13 +51,13 @@ class PowerMonitor:
                 self._max_w = watts
                 return
 
-            # Actualizar min/max
+            # Update min/max
             if self._min_w is None or watts < self._min_w:
                 self._min_w = watts
             if self._max_w is None or watts > self._max_w:
                 self._max_w = watts
 
-            # Integrar energía (método del trapecio entre última lectura y la actual)
+            # Integrate energy using trapezoidal rule.
             if self._last_time is not None and self._last_watts is not None:
                 dt_seconds = now - self._last_time
                 if dt_seconds > 0:
@@ -65,26 +65,26 @@ class PowerMonitor:
                     avg_watts = (self._last_watts + watts) / 2.0
                     self._energy_Wh += avg_watts * dt_hours
 
-            # Actualizar último estado
+            # Update last state
             self._last_time = now
             self._last_watts = watts
 
     def update(self) -> None:
         """
-        Llamar manualmente a este método para actualizar el estado del monitor.
-        Útil si ya tienes tu propio loop en el bot.
+        Manually update monitor state.
+        Useful when the caller already owns the main loop.
         """
         now = time.time()
         self._step(now)
 
-    # -------------------- MODO EN SEGUNDO PLANO --------------------
+    # -------------------- BACKGROUND MODE --------------------
 
     def _run_loop(self) -> None:
-        """Loop interno para el modo background."""
+        """Internal loop for background mode."""
         while self._running:
             start = time.time()
             self._step(start)
-            # Dormir el tiempo restante hasta el siguiente sample
+            # Sleep until next sample time.
             elapsed = time.time() - start
             to_sleep = self.sample_interval - elapsed
             if to_sleep > 0:
@@ -92,8 +92,7 @@ class PowerMonitor:
 
     def start_background(self) -> None:
         """
-        Arranca un hilo en segundo plano que va leyendo el consumo
-        cada sample_interval segundos.
+        Start a background thread that samples every sample_interval seconds.
         """
         if self._running:
             return
@@ -102,17 +101,17 @@ class PowerMonitor:
         self._thread.start()
 
     def stop_background(self) -> None:
-        """Detiene el hilo en segundo plano (si está activo)."""
+        """Stop the background thread (if active)."""
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
 
-    # -------------------- CONSULTA DE ESTADÍSTICAS --------------------
+    # -------------------- STATS --------------------
 
     def get_stats(self) -> Dict[str, Any]:
         """
-        Devuelve un dict con:
+        Returns:
         - current_w
         - min_w
         - max_w
@@ -145,7 +144,7 @@ class PowerMonitor:
         }
 
     def reset(self) -> None:
-        """Resetea todas las métricas acumuladas."""
+        """Reset all accumulated metrics."""
         with self._lock:
             self._start_time = None
             self._last_time = None

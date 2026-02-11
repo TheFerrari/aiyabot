@@ -5,7 +5,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 class _SYSTEM_POWER_STATUS(ctypes.Structure):
@@ -142,56 +142,86 @@ class HwinfoCsvReader:
     power_keywords: List[str]
     temp_keywords: List[str]
     _last_ok: bool = False
-    _encoding_candidates: List[str] = None
+    _encoding_candidates: Optional[List[str]] = None
+    _last_diag: Optional[Dict[str, object]] = None
 
     def __post_init__(self) -> None:
         if self._encoding_candidates is None:
             # HWiNFO commonly writes ANSI (cp1252) on Windows.
             # Some setups may also export UTF-16.
             self._encoding_candidates = ["utf-8-sig", "utf-16", "utf-16-le", "cp1252", "latin-1"]
+        if self._last_diag is None:
+            self._last_diag = {}
 
-    def _decode_bytes(self, raw: bytes) -> Optional[str]:
-        for encoding in self._encoding_candidates:
+    def _set_diag(self, **kwargs: object) -> None:
+        self._last_diag.update(kwargs)
+
+    def get_debug_info(self) -> Dict[str, object]:
+        return dict(self._last_diag)
+
+    def _decode_bytes(self, raw: bytes) -> Tuple[Optional[str], Optional[str]]:
+        for encoding in self._encoding_candidates or []:
             try:
-                return raw.decode(encoding)
+                return raw.decode(encoding), encoding
             except UnicodeDecodeError:
                 continue
-        return None
+        return None, None
 
     def _read_last_row(self) -> Optional[Dict[str, str]]:
         path = Path(self.csv_path)
+        self._set_diag(csv_path=str(path), file_exists=path.exists(), file_is_file=path.is_file())
         if not path.exists() or not path.is_file():
             self._last_ok = False
+            self._set_diag(last_error="csv_missing_or_not_file")
             return None
 
         try:
             raw = path.read_bytes()
         except OSError:
             self._last_ok = False
+            self._set_diag(last_error="csv_read_os_error")
             return None
 
-        data = self._decode_bytes(raw)
+        self._set_diag(file_size_bytes=len(raw))
+        data, encoding = self._decode_bytes(raw)
         if data is None:
             self._last_ok = False
+            self._set_diag(last_error="csv_decode_failed", encoding_candidates=self._encoding_candidates)
             return None
+        self._set_diag(encoding=encoding)
 
         if not data.strip():
             self._last_ok = False
+            self._set_diag(last_error="csv_empty")
             return None
 
         delimiter = _detect_delimiter(data[:4096])
-        rows = list(csv.DictReader(data.splitlines(), delimiter=delimiter))
+        parsed = csv.DictReader(data.splitlines(), delimiter=delimiter)
+        rows = list(parsed)
         if not rows:
             self._last_ok = False
+            self._set_diag(
+                last_error="csv_no_data_rows",
+                delimiter=delimiter,
+                header_count=0 if parsed.fieldnames is None else len(parsed.fieldnames),
+            )
             return None
 
+        fieldnames = parsed.fieldnames or []
         self._last_ok = True
+        self._set_diag(
+            last_error=None,
+            delimiter=delimiter,
+            row_count=len(rows),
+            header_count=len(fieldnames),
+            sample_headers=fieldnames[:20],
+        )
         return rows[-1]
 
     @staticmethod
-    def _pick_value_from_row(row: Dict[str, str], keywords: List[str]) -> Optional[float]:
+    def _pick_value_from_row_with_key(row: Dict[str, str], keywords: List[str]) -> Tuple[Optional[float], Optional[str]]:
         if not row:
-            return None
+            return None, None
 
         lowered_keys = {k.lower(): k for k in row.keys()}
         for keyword in keywords:
@@ -201,23 +231,39 @@ class HwinfoCsvReader:
             if needle in lowered_keys:
                 value = _parse_float(row.get(lowered_keys[needle], ""))
                 if value is not None:
-                    return value
+                    return value, lowered_keys[needle]
 
             # Fallback contains match.
             for key in row.keys():
                 if needle in key.lower():
                     value = _parse_float(row.get(key, ""))
                     if value is not None:
-                        return value
-        return None
+                        return value, key
+        return None, None
 
     def read_power_w(self) -> Optional[float]:
         row = self._read_last_row()
-        return self._pick_value_from_row(row or {}, self.power_keywords)
+        value, matched_col = self._pick_value_from_row_with_key(row or {}, self.power_keywords)
+        self._set_diag(
+            power_value=value,
+            power_matched_column=matched_col,
+            power_keywords=self.power_keywords,
+        )
+        if value is None:
+            self._set_diag(last_error=self._last_diag.get("last_error") or "no_power_match")
+        return value
 
     def read_temperature_c(self) -> Optional[float]:
         row = self._read_last_row()
-        return self._pick_value_from_row(row or {}, self.temp_keywords)
+        value, matched_col = self._pick_value_from_row_with_key(row or {}, self.temp_keywords)
+        self._set_diag(
+            temperature_value=value,
+            temperature_matched_column=matched_col,
+            temp_keywords=self.temp_keywords,
+        )
+        if value is None:
+            self._set_diag(last_error=self._last_diag.get("last_error") or "no_temperature_match")
+        return value
 
     def read_snapshot(
         self,
@@ -230,19 +276,27 @@ class HwinfoCsvReader:
         soc_temp_keywords: List[str],
     ) -> Dict[str, Optional[float]]:
         row = self._read_last_row() or {}
+        total_power_w, _ = self._pick_value_from_row_with_key(row, total_power_keywords)
+        cpu_package_power_w, _ = self._pick_value_from_row_with_key(row, cpu_power_keywords)
+        gpu_asic_power_w, _ = self._pick_value_from_row_with_key(row, gpu_power_keywords)
+        apu_stapm_w, _ = self._pick_value_from_row_with_key(row, stapm_power_keywords)
+        cpu_temp_c, _ = self._pick_value_from_row_with_key(row, cpu_temp_keywords)
+        gpu_temp_c, _ = self._pick_value_from_row_with_key(row, gpu_temp_keywords)
+        soc_temp_c, _ = self._pick_value_from_row_with_key(row, soc_temp_keywords)
         return {
-            "total_power_w": self._pick_value_from_row(row, total_power_keywords),
-            "cpu_package_power_w": self._pick_value_from_row(row, cpu_power_keywords),
-            "gpu_asic_power_w": self._pick_value_from_row(row, gpu_power_keywords),
-            "apu_stapm_w": self._pick_value_from_row(row, stapm_power_keywords),
-            "cpu_temp_c": self._pick_value_from_row(row, cpu_temp_keywords),
-            "gpu_temp_c": self._pick_value_from_row(row, gpu_temp_keywords),
-            "soc_temp_c": self._pick_value_from_row(row, soc_temp_keywords),
+            "total_power_w": total_power_w,
+            "cpu_package_power_w": cpu_package_power_w,
+            "gpu_asic_power_w": gpu_asic_power_w,
+            "apu_stapm_w": apu_stapm_w,
+            "cpu_temp_c": cpu_temp_c,
+            "gpu_temp_c": gpu_temp_c,
+            "soc_temp_c": soc_temp_c,
         }
 
 
 _hwinfo_reader: Optional[HwinfoCsvReader] = None
 _hwinfo_snapshot_fn: Optional[Callable[[], Dict[str, Optional[float]]]] = None
+_hwinfo_debug_fn: Optional[Callable[[], Dict[str, object]]] = None
 
 
 def _build_hwinfo_snapshot_reader_from_env(
@@ -251,43 +305,43 @@ def _build_hwinfo_snapshot_reader_from_env(
     total_power_keywords = _split_keywords(
         os.getenv(
             "HWINFO_TOTAL_POWER_KEYWORDS",
-            "Total System Power [W],Core+SoC+SR Power (SVI3 TFN) [W],APU STAPM [W],CPU Package Power [W]",
+            "Total System Power,Core+SoC+SR Power (SVI3 TFN),APU STAPM,CPU Package Power",
         )
     )
     cpu_power_keywords = _split_keywords(
         os.getenv(
             "HWINFO_CPU_POWER_KEYWORDS",
-            "CPU Package Power [W],CPU Core Power (SVI3 TFN) [W],Core+SoC+SR Power (SVI3 TFN) [W]",
+            "CPU Package Power,CPU Core Power (SVI3 TFN),Core+SoC+SR Power (SVI3 TFN)",
         )
     )
     gpu_power_keywords = _split_keywords(
         os.getenv(
             "HWINFO_GPU_POWER_KEYWORDS",
-            "GPU ASIC Power [W]",
+            "GPU ASIC Power",
         )
     )
     stapm_power_keywords = _split_keywords(
         os.getenv(
             "HWINFO_STAPM_POWER_KEYWORDS",
-            "APU STAPM [W]",
+            "APU STAPM",
         )
     )
     cpu_temp_keywords = _split_keywords(
         os.getenv(
             "HWINFO_CPU_TEMP_KEYWORDS",
-            "CPU (Tctl/Tdie) [°C],CPU Core [°C],Core Temperatures (avg) [°C]",
+            "CPU (Tctl/Tdie),CPU Core,Core Temperatures (avg)",
         )
     )
     gpu_temp_keywords = _split_keywords(
         os.getenv(
             "HWINFO_GPU_TEMP_KEYWORDS",
-            "GPU Temperature [°C],APU GFX [°C]",
+            "GPU Temperature,APU GFX",
         )
     )
     soc_temp_keywords = _split_keywords(
         os.getenv(
             "HWINFO_SOC_TEMP_KEYWORDS",
-            "CPU SOC [°C]",
+            "CPU SOC",
         )
     )
 
@@ -308,18 +362,18 @@ def _build_hwinfo_snapshot_reader_from_env(
 def _build_hwinfo_reader_from_env() -> HwinfoCsvReader:
     csv_path = os.getenv("HWINFO_CSV_PATH", "").strip()
     if not csv_path:
-        raise ValueError("HWINFO_CSV_PATH es requerido para POWER_READER=hwinfo_csv")
+        raise ValueError("HWINFO_CSV_PATH is required for POWER_READER=hwinfo_csv")
 
     power_keywords = _split_keywords(
         os.getenv(
             "HWINFO_POWER_COLUMN_KEYWORDS",
-            "Total System Power [W],Core+SoC+SR Power (SVI3 TFN) [W],APU STAPM [W],CPU Package Power [W],GPU ASIC Power [W]",
+            "Total System Power,Core+SoC+SR Power (SVI3 TFN),APU STAPM,CPU Package Power,GPU ASIC Power",
         )
     )
     temp_keywords = _split_keywords(
         os.getenv(
             "HWINFO_TEMP_COLUMN_KEYWORDS",
-            "CPU (Tctl/Tdie) [°C],CPU Core [°C],Core Temperatures (avg) [°C],GPU Temperature [°C],APU GFX [°C],CPU SOC [°C]",
+            "CPU (Tctl/Tdie),CPU Core,Core Temperatures (avg),GPU Temperature,APU GFX,CPU SOC",
         )
     )
     return HwinfoCsvReader(
@@ -339,11 +393,11 @@ def env_power_reader() -> Callable[[], Optional[float]]:
       - BATTERY_CAPACITY_WH=number (default 50)
       - BATTERY_MIN_INTERVAL_S=number (default 20)
     - POWER_READER=hwinfo_csv (default)
-      - HWINFO_CSV_PATH=path al CSV de logging de HWiNFO
-      - HWINFO_POWER_COLUMN_KEYWORDS=lista separada por comas
-      - HWINFO_TEMP_COLUMN_KEYWORDS=lista separada por comas (para env_temperature_reader)
+      - HWINFO_CSV_PATH=path to HWiNFO logging CSV
+      - HWINFO_POWER_COLUMN_KEYWORDS=comma-separated list
+      - HWINFO_TEMP_COLUMN_KEYWORDS=comma-separated list (for env_temperature_reader)
     """
-    global _hwinfo_reader, _hwinfo_snapshot_fn
+    global _hwinfo_reader, _hwinfo_snapshot_fn, _hwinfo_debug_fn
     mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
 
     if mode == "mock":
@@ -356,6 +410,7 @@ def env_power_reader() -> Callable[[], Optional[float]]:
     if mode == "hwinfo_csv":
         _hwinfo_reader = _build_hwinfo_reader_from_env()
         _hwinfo_snapshot_fn = _build_hwinfo_snapshot_reader_from_env(_hwinfo_reader)
+        _hwinfo_debug_fn = _hwinfo_reader.get_debug_info
         return _hwinfo_reader.read_power_w
 
     capacity_wh = float(os.getenv("BATTERY_CAPACITY_WH", "50"))
@@ -371,12 +426,13 @@ def env_temperature_reader() -> Optional[Callable[[], Optional[float]]]:
     Returns a temperature reader when current POWER_READER supports it.
     Currently only available for POWER_READER=hwinfo_csv.
     """
-    global _hwinfo_reader, _hwinfo_snapshot_fn
+    global _hwinfo_reader, _hwinfo_snapshot_fn, _hwinfo_debug_fn
     mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
     if mode != "hwinfo_csv":
         return None
     if _hwinfo_reader is None:
         _hwinfo_reader = _build_hwinfo_reader_from_env()
+        _hwinfo_debug_fn = _hwinfo_reader.get_debug_info
     if _hwinfo_snapshot_fn is None:
         _hwinfo_snapshot_fn = _build_hwinfo_snapshot_reader_from_env(_hwinfo_reader)
     return _hwinfo_reader.read_temperature_c
@@ -386,12 +442,28 @@ def env_hwinfo_snapshot_reader() -> Optional[Callable[[], Dict[str, Optional[flo
     """
     Returns a detailed HWiNFO snapshot reader when POWER_READER=hwinfo_csv.
     """
-    global _hwinfo_reader, _hwinfo_snapshot_fn
+    global _hwinfo_reader, _hwinfo_snapshot_fn, _hwinfo_debug_fn
     mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
     if mode != "hwinfo_csv":
         return None
     if _hwinfo_reader is None:
         _hwinfo_reader = _build_hwinfo_reader_from_env()
+        _hwinfo_debug_fn = _hwinfo_reader.get_debug_info
     if _hwinfo_snapshot_fn is None:
         _hwinfo_snapshot_fn = _build_hwinfo_snapshot_reader_from_env(_hwinfo_reader)
     return _hwinfo_snapshot_fn
+
+
+def env_hwinfo_debug_reader() -> Optional[Callable[[], Dict[str, object]]]:
+    """
+    Returns a diagnostic reader for HWiNFO CSV mode.
+    """
+    global _hwinfo_reader, _hwinfo_debug_fn
+    mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
+    if mode != "hwinfo_csv":
+        return None
+    if _hwinfo_reader is None:
+        _hwinfo_reader = _build_hwinfo_reader_from_env()
+    if _hwinfo_debug_fn is None:
+        _hwinfo_debug_fn = _hwinfo_reader.get_debug_info
+    return _hwinfo_debug_fn
