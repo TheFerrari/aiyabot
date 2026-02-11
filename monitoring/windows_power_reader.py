@@ -109,11 +109,21 @@ def _parse_float(value: str) -> Optional[float]:
 
 
 def _detect_delimiter(sample: str) -> str:
+    # Detect delimiter from header line only.
+    # This avoids false positives when values use decimal comma (e.g. 29,48).
+    header = ""
+    for line in sample.splitlines():
+        if line.strip():
+            header = line
+            break
+    if not header:
+        return ","
+
     candidates = [",", ";", "\t"]
     best = ","
     best_count = -1
     for delimiter in candidates:
-        count = sample.count(delimiter)
+        count = header.count(delimiter)
         if count > best_count:
             best = delimiter
             best_count = count
@@ -137,7 +147,8 @@ class HwinfoCsvReader:
     def __post_init__(self) -> None:
         if self._encoding_candidates is None:
             # HWiNFO commonly writes ANSI (cp1252) on Windows.
-            self._encoding_candidates = ["utf-8-sig", "cp1252", "latin-1"]
+            # Some setups may also export UTF-16.
+            self._encoding_candidates = ["utf-8-sig", "utf-16", "utf-16-le", "cp1252", "latin-1"]
 
     def _decode_bytes(self, raw: bytes) -> Optional[str]:
         for encoding in self._encoding_candidates:
