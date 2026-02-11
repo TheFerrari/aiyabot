@@ -208,8 +208,90 @@ class HwinfoCsvReader:
         row = self._read_last_row()
         return self._pick_value_from_row(row or {}, self.temp_keywords)
 
+    def read_snapshot(
+        self,
+        total_power_keywords: List[str],
+        cpu_power_keywords: List[str],
+        gpu_power_keywords: List[str],
+        stapm_power_keywords: List[str],
+        cpu_temp_keywords: List[str],
+        gpu_temp_keywords: List[str],
+        soc_temp_keywords: List[str],
+    ) -> Dict[str, Optional[float]]:
+        row = self._read_last_row() or {}
+        return {
+            "total_power_w": self._pick_value_from_row(row, total_power_keywords),
+            "cpu_package_power_w": self._pick_value_from_row(row, cpu_power_keywords),
+            "gpu_asic_power_w": self._pick_value_from_row(row, gpu_power_keywords),
+            "apu_stapm_w": self._pick_value_from_row(row, stapm_power_keywords),
+            "cpu_temp_c": self._pick_value_from_row(row, cpu_temp_keywords),
+            "gpu_temp_c": self._pick_value_from_row(row, gpu_temp_keywords),
+            "soc_temp_c": self._pick_value_from_row(row, soc_temp_keywords),
+        }
+
 
 _hwinfo_reader: Optional[HwinfoCsvReader] = None
+_hwinfo_snapshot_fn: Optional[Callable[[], Dict[str, Optional[float]]]] = None
+
+
+def _build_hwinfo_snapshot_reader_from_env(
+    reader: HwinfoCsvReader,
+) -> Callable[[], Dict[str, Optional[float]]]:
+    total_power_keywords = _split_keywords(
+        os.getenv(
+            "HWINFO_TOTAL_POWER_KEYWORDS",
+            "Total System Power [W],Core+SoC+SR Power (SVI3 TFN) [W],APU STAPM [W],CPU Package Power [W]",
+        )
+    )
+    cpu_power_keywords = _split_keywords(
+        os.getenv(
+            "HWINFO_CPU_POWER_KEYWORDS",
+            "CPU Package Power [W],CPU Core Power (SVI3 TFN) [W],Core+SoC+SR Power (SVI3 TFN) [W]",
+        )
+    )
+    gpu_power_keywords = _split_keywords(
+        os.getenv(
+            "HWINFO_GPU_POWER_KEYWORDS",
+            "GPU ASIC Power [W]",
+        )
+    )
+    stapm_power_keywords = _split_keywords(
+        os.getenv(
+            "HWINFO_STAPM_POWER_KEYWORDS",
+            "APU STAPM [W]",
+        )
+    )
+    cpu_temp_keywords = _split_keywords(
+        os.getenv(
+            "HWINFO_CPU_TEMP_KEYWORDS",
+            "CPU (Tctl/Tdie) [°C],CPU Core [°C],Core Temperatures (avg) [°C]",
+        )
+    )
+    gpu_temp_keywords = _split_keywords(
+        os.getenv(
+            "HWINFO_GPU_TEMP_KEYWORDS",
+            "GPU Temperature [°C],APU GFX [°C]",
+        )
+    )
+    soc_temp_keywords = _split_keywords(
+        os.getenv(
+            "HWINFO_SOC_TEMP_KEYWORDS",
+            "CPU SOC [°C]",
+        )
+    )
+
+    def _snapshot() -> Dict[str, Optional[float]]:
+        return reader.read_snapshot(
+            total_power_keywords=total_power_keywords,
+            cpu_power_keywords=cpu_power_keywords,
+            gpu_power_keywords=gpu_power_keywords,
+            stapm_power_keywords=stapm_power_keywords,
+            cpu_temp_keywords=cpu_temp_keywords,
+            gpu_temp_keywords=gpu_temp_keywords,
+            soc_temp_keywords=soc_temp_keywords,
+        )
+
+    return _snapshot
 
 
 def _build_hwinfo_reader_from_env() -> HwinfoCsvReader:
@@ -220,13 +302,13 @@ def _build_hwinfo_reader_from_env() -> HwinfoCsvReader:
     power_keywords = _split_keywords(
         os.getenv(
             "HWINFO_POWER_COLUMN_KEYWORDS",
-            "CPU Package Power,Package Power,APU STAPM,SoC Power,GPU ASIC Power,Total System Power",
+            "Total System Power [W],Core+SoC+SR Power (SVI3 TFN) [W],APU STAPM [W],CPU Package Power [W],GPU ASIC Power [W]",
         )
     )
     temp_keywords = _split_keywords(
         os.getenv(
             "HWINFO_TEMP_COLUMN_KEYWORDS",
-            "CPU (Tctl/Tdie),CPU Die (average),CPU CCD1 (Tdie),GPU Temperature,GPU Hot Spot Temperature",
+            "CPU (Tctl/Tdie) [°C],CPU Core [°C],Core Temperatures (avg) [°C],GPU Temperature [°C],APU GFX [°C],CPU SOC [°C]",
         )
     )
     return HwinfoCsvReader(
@@ -250,7 +332,7 @@ def env_power_reader() -> Callable[[], Optional[float]]:
       - HWINFO_POWER_COLUMN_KEYWORDS=lista separada por comas
       - HWINFO_TEMP_COLUMN_KEYWORDS=lista separada por comas (para env_temperature_reader)
     """
-    global _hwinfo_reader
+    global _hwinfo_reader, _hwinfo_snapshot_fn
     mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
 
     if mode == "mock":
@@ -262,6 +344,7 @@ def env_power_reader() -> Callable[[], Optional[float]]:
         return _mock_reader
     if mode == "hwinfo_csv":
         _hwinfo_reader = _build_hwinfo_reader_from_env()
+        _hwinfo_snapshot_fn = _build_hwinfo_snapshot_reader_from_env(_hwinfo_reader)
         return _hwinfo_reader.read_power_w
 
     capacity_wh = float(os.getenv("BATTERY_CAPACITY_WH", "50"))
@@ -277,10 +360,27 @@ def env_temperature_reader() -> Optional[Callable[[], Optional[float]]]:
     Returns a temperature reader when current POWER_READER supports it.
     Currently only available for POWER_READER=hwinfo_csv.
     """
-    global _hwinfo_reader
+    global _hwinfo_reader, _hwinfo_snapshot_fn
     mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
     if mode != "hwinfo_csv":
         return None
     if _hwinfo_reader is None:
         _hwinfo_reader = _build_hwinfo_reader_from_env()
+    if _hwinfo_snapshot_fn is None:
+        _hwinfo_snapshot_fn = _build_hwinfo_snapshot_reader_from_env(_hwinfo_reader)
     return _hwinfo_reader.read_temperature_c
+
+
+def env_hwinfo_snapshot_reader() -> Optional[Callable[[], Dict[str, Optional[float]]]]:
+    """
+    Returns a detailed HWiNFO snapshot reader when POWER_READER=hwinfo_csv.
+    """
+    global _hwinfo_reader, _hwinfo_snapshot_fn
+    mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
+    if mode != "hwinfo_csv":
+        return None
+    if _hwinfo_reader is None:
+        _hwinfo_reader = _build_hwinfo_reader_from_env()
+    if _hwinfo_snapshot_fn is None:
+        _hwinfo_snapshot_fn = _build_hwinfo_snapshot_reader_from_env(_hwinfo_reader)
+    return _hwinfo_snapshot_fn

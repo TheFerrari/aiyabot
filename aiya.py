@@ -9,7 +9,11 @@ from core.logging_setup import get_logger
 from dotenv import load_dotenv
 from core.queuehandler import GlobalQueue
 from monitoring.power_monitor import PowerMonitor
-from monitoring.windows_power_reader import env_power_reader, env_temperature_reader
+from monitoring.windows_power_reader import (
+    env_hwinfo_snapshot_reader,
+    env_power_reader,
+    env_temperature_reader,
+)
 
 #from core.mask_server import MaskEditorServer
 
@@ -27,6 +31,7 @@ bot.logger = get_logger(__name__)
 
 power_monitor = None
 temperature_reader = None
+hwinfo_snapshot_reader = None
 enable_power_monitor = os.getenv("ENABLE_POWER_MONITOR", "False").lower() in ("true", "1", "t")
 if enable_power_monitor:
     try:
@@ -35,10 +40,12 @@ if enable_power_monitor:
             sample_interval=float(os.getenv("POWER_SAMPLE_INTERVAL_S", "5")),
         )
         temperature_reader = env_temperature_reader()
+        hwinfo_snapshot_reader = env_hwinfo_snapshot_reader()
     except Exception as e:
         print(f"⚠️  No se pudo inicializar PowerMonitor: {e}")
         power_monitor = None
         temperature_reader = None
+        hwinfo_snapshot_reader = None
 
 # Startup checks
 try:
@@ -125,6 +132,13 @@ async def power(ctx):
             "También puedes probar POWER_READER=mock o revisar tu log de HWiNFO."
         )
     else:
+        snapshot = {}
+        if hwinfo_snapshot_reader is not None:
+            try:
+                snapshot = hwinfo_snapshot_reader() or {}
+            except Exception:
+                snapshot = {}
+
         temp_line = ""
         if temperature_reader is not None:
             try:
@@ -134,11 +148,27 @@ async def power(ctx):
             except Exception:
                 temp_line = ""
 
+        extra_lines = ""
+        if snapshot:
+            if snapshot.get("cpu_temp_c") is not None:
+                extra_lines += f"CPU Temp: `{snapshot['cpu_temp_c']:.1f} °C`\n"
+            if snapshot.get("gpu_temp_c") is not None:
+                extra_lines += f"GPU Temp: `{snapshot['gpu_temp_c']:.1f} °C`\n"
+            if snapshot.get("soc_temp_c") is not None:
+                extra_lines += f"SoC Temp: `{snapshot['soc_temp_c']:.1f} °C`\n"
+            if snapshot.get("cpu_package_power_w") is not None:
+                extra_lines += f"CPU Pkg: `{snapshot['cpu_package_power_w']:.2f} W`\n"
+            if snapshot.get("gpu_asic_power_w") is not None:
+                extra_lines += f"GPU ASIC: `{snapshot['gpu_asic_power_w']:.2f} W`\n"
+            if snapshot.get("apu_stapm_w") is not None:
+                extra_lines += f"APU STAPM: `{snapshot['apu_stapm_w']:.2f} W`\n"
+
         description = (
             f"Current: `{stats['current_w']:.2f} W`\n"
             f"Min: `{stats['min_w']:.2f} W`\n"
             f"Max: `{stats['max_w']:.2f} W`\n"
             f"{temp_line}"
+            f"{extra_lines}"
             f"Energy: `{stats['energy_Wh']:.3f} Wh` (`{stats['energy_kWh']:.6f} kWh`)\n"
             f"Elapsed: `{stats['elapsed_s']:.1f} s`"
         )
