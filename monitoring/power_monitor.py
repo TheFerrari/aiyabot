@@ -14,6 +14,7 @@ class PowerMonitor:
     def __init__(self, power_reader: Callable[[], Optional[float]], sample_interval: float = 1.0):
         self.power_reader = power_reader
         self.sample_interval = sample_interval
+        self.sample_callback: Optional[Callable[[float, float], None]] = None
 
         self._lock = threading.Lock()
         self._running = False
@@ -49,25 +50,30 @@ class PowerMonitor:
                 self._last_watts = watts
                 self._min_w = watts
                 self._max_w = watts
-                return
+            else:
+                # Update min/max
+                if self._min_w is None or watts < self._min_w:
+                    self._min_w = watts
+                if self._max_w is None or watts > self._max_w:
+                    self._max_w = watts
+                # Integrate energy using trapezoidal rule.
+                if self._last_time is not None and self._last_watts is not None:
+                    dt_seconds = now - self._last_time
+                    if dt_seconds > 0:
+                        dt_hours = dt_seconds / 3600.0
+                        avg_watts = (self._last_watts + watts) / 2.0
+                        self._energy_Wh += avg_watts * dt_hours
 
-            # Update min/max
-            if self._min_w is None or watts < self._min_w:
-                self._min_w = watts
-            if self._max_w is None or watts > self._max_w:
-                self._max_w = watts
+                # Update last state
+                self._last_time = now
+                self._last_watts = watts
 
-            # Integrate energy using trapezoidal rule.
-            if self._last_time is not None and self._last_watts is not None:
-                dt_seconds = now - self._last_time
-                if dt_seconds > 0:
-                    dt_hours = dt_seconds / 3600.0
-                    avg_watts = (self._last_watts + watts) / 2.0
-                    self._energy_Wh += avg_watts * dt_hours
-
-            # Update last state
-            self._last_time = now
-            self._last_watts = watts
+        # Optional hook for external history/telemetry collection.
+        if self.sample_callback is not None:
+            try:
+                self.sample_callback(now, watts)
+            except Exception:
+                pass
 
     def update(self) -> None:
         """
