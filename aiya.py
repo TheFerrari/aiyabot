@@ -134,6 +134,10 @@ async def power(ctx):
     )
 
     stats = power_monitor.get_stats()
+    if stats["current_w"] is None:
+        # Trigger an on-demand sample so /power can diagnose current state immediately.
+        power_monitor.update()
+        stats = power_monitor.get_stats()
 
     debug_info = {}
     if hwinfo_debug_reader is not None:

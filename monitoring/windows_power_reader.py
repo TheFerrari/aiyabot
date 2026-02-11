@@ -208,15 +208,42 @@ class HwinfoCsvReader:
             return None
 
         fieldnames = parsed.fieldnames or []
+        selected_row: Optional[Dict[str, str]] = None
+        selected_offset_from_end = None
+        for idx, candidate in enumerate(reversed(rows), start=1):
+            has_non_empty_sensor_value = False
+            for key, value in candidate.items():
+                if key is None:
+                    continue
+                if key.strip().lower() in {"date", "time"}:
+                    continue
+                if value is not None and str(value).strip():
+                    has_non_empty_sensor_value = True
+                    break
+            if has_non_empty_sensor_value:
+                selected_row = candidate
+                selected_offset_from_end = idx
+                break
+        if selected_row is None:
+            self._last_ok = False
+            self._set_diag(
+                last_error="csv_only_empty_rows",
+                delimiter=delimiter,
+                row_count=len(rows),
+                header_count=len(fieldnames),
+            )
+            return None
+
         self._last_ok = True
         self._set_diag(
             last_error=None,
             delimiter=delimiter,
             row_count=len(rows),
             header_count=len(fieldnames),
+            selected_row_offset_from_end=selected_offset_from_end,
             sample_headers=fieldnames[:20],
         )
-        return rows[-1]
+        return selected_row
 
     @staticmethod
     def _pick_value_from_row_with_key(row: Dict[str, str], keywords: List[str]) -> Tuple[Optional[float], Optional[str]]:
@@ -244,10 +271,24 @@ class HwinfoCsvReader:
     def read_power_w(self) -> Optional[float]:
         row = self._read_last_row()
         value, matched_col = self._pick_value_from_row_with_key(row or {}, self.power_keywords)
+        candidate_columns = []
+        if row:
+            lowered = {k.lower(): k for k in row.keys()}
+            for keyword in self.power_keywords:
+                needle = keyword.lower()
+                exact = lowered.get(needle)
+                if exact:
+                    candidate_columns.append((exact, row.get(exact)))
+                else:
+                    for key in row.keys():
+                        if needle in key.lower():
+                            candidate_columns.append((key, row.get(key)))
+                            break
         self._set_diag(
             power_value=value,
             power_matched_column=matched_col,
             power_keywords=self.power_keywords,
+            power_candidate_columns=candidate_columns[:10],
         )
         if value is None:
             self._set_diag(last_error=self._last_diag.get("last_error") or "no_power_match")
