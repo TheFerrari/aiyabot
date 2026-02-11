@@ -35,7 +35,6 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 bot.logger = get_logger(__name__)
-bot.logger.info(f"[startup-python-env] {_python_env_debug()}")
 
 # Optional plotting backend for /power graph
 try:
@@ -66,6 +65,9 @@ def _python_env_debug() -> dict:
         "site_packages_preview": site_paths[:6],
         "sys_path_preview": sys.path[:8],
     }
+
+
+bot.logger.info(f"[startup-python-env] {_python_env_debug()}")
 
 
 POWER_WINDOWS_S = {
