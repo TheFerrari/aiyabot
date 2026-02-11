@@ -2,6 +2,7 @@ import ctypes
 import csv
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,13 +160,59 @@ class HwinfoCsvReader:
     def get_debug_info(self) -> Dict[str, object]:
         return dict(self._last_diag)
 
+    @staticmethod
+    def _score_decoded_text(text: str) -> float:
+        if not text:
+            return -1e9
+
+        non_empty_lines = [line for line in text.splitlines() if line.strip()]
+        if not non_empty_lines:
+            return -1e9
+
+        header = non_empty_lines[0]
+        delimiter = _detect_delimiter(header)
+        columns = [c.strip().strip('"') for c in header.split(delimiter)]
+        field_count = len(columns)
+        has_date = any(c.lower() == "date" for c in columns)
+        has_time = any(c.lower() == "time" for c in columns)
+        has_power = any("power" in c.lower() for c in columns)
+        null_ratio = (text.count("\x00") / max(1, len(text)))
+
+        score = 0.0
+        score += field_count * 2.0
+        if field_count == 1:
+            score -= 200.0
+        if has_date:
+            score += 100.0
+        if has_time:
+            score += 100.0
+        if has_power:
+            score += 40.0
+        score -= null_ratio * 1000.0
+        return score
+
     def _decode_bytes(self, raw: bytes) -> Tuple[Optional[str], Optional[str]]:
+        best_text: Optional[str] = None
+        best_encoding: Optional[str] = None
+        best_score = -1e18
+        tried = []
+
         for encoding in self._encoding_candidates or []:
             try:
-                return raw.decode(encoding), encoding
+                text = raw.decode(encoding)
             except UnicodeDecodeError:
+                tried.append((encoding, "decode_error"))
                 continue
-        return None, None
+
+            score = self._score_decoded_text(text)
+            tried.append((encoding, score))
+            if score > best_score:
+                best_score = score
+                best_text = text
+                best_encoding = encoding
+
+        self._set_diag(encoding_candidates_tried=tried)
+        return best_text, best_encoding
 
     def _read_last_row(self) -> Optional[Dict[str, str]]:
         path = Path(self.csv_path)
@@ -195,6 +242,7 @@ class HwinfoCsvReader:
             self._set_diag(last_error="csv_empty")
             return None
 
+        _ensure_csv_field_limit()
         delimiter = _detect_delimiter(data[:4096])
         parsed = csv.DictReader(data.splitlines(), delimiter=delimiter)
         rows = list(parsed)
@@ -246,11 +294,15 @@ class HwinfoCsvReader:
         return selected_row
 
     @staticmethod
-    def _pick_value_from_row_with_key(row: Dict[str, str], keywords: List[str]) -> Tuple[Optional[float], Optional[str]]:
+    def _pick_value_from_row_with_key(
+        row: Dict[str, str],
+        keywords: List[str],
+    ) -> Tuple[Optional[float], Optional[str]]:
         if not row:
             return None, None
 
-        lowered_keys = {k.lower(): k for k in row.keys()}
+        valid_keys = [k for k in row.keys() if isinstance(k, str)]
+        lowered_keys = {k.lower(): k for k in valid_keys}
         for keyword in keywords:
             needle = keyword.lower()
 
@@ -261,7 +313,7 @@ class HwinfoCsvReader:
                     return value, lowered_keys[needle]
 
             # Fallback contains match.
-            for key in row.keys():
+            for key in valid_keys:
                 if needle in key.lower():
                     value = _parse_float(row.get(key, ""))
                     if value is not None:
@@ -269,30 +321,68 @@ class HwinfoCsvReader:
         return None, None
 
     def read_power_w(self) -> Optional[float]:
-        row = self._read_last_row()
-        value, matched_col = self._pick_value_from_row_with_key(row or {}, self.power_keywords)
-        candidate_columns = []
-        if row:
-            lowered = {k.lower(): k for k in row.keys()}
-            for keyword in self.power_keywords:
-                needle = keyword.lower()
-                exact = lowered.get(needle)
-                if exact:
-                    candidate_columns.append((exact, row.get(exact)))
-                else:
-                    for key in row.keys():
-                        if needle in key.lower():
-                            candidate_columns.append((key, row.get(key)))
-                            break
-        self._set_diag(
-            power_value=value,
-            power_matched_column=matched_col,
-            power_keywords=self.power_keywords,
-            power_candidate_columns=candidate_columns[:10],
-        )
-        if value is None:
-            self._set_diag(last_error=self._last_diag.get("last_error") or "no_power_match")
-        return value
+        try:
+            row = self._read_last_row()
+            value: Optional[float] = None
+            matched_col: Optional[str] = None
+            candidate_columns: List[Tuple[str, Optional[str], Optional[float]]] = []
+            positive_choice: Optional[Tuple[str, float]] = None
+            any_choice: Optional[Tuple[str, float]] = None
+            power_related_columns = []
+            if row:
+                try:
+                    valid_keys = [k for k in row.keys() if isinstance(k, str)]
+                    lowered = {k.lower(): k for k in valid_keys}
+                    power_related_columns = [
+                        (k, row.get(k))
+                        for k in valid_keys
+                        if "power" in k.lower()
+                    ][:20]
+                    for keyword in self.power_keywords:
+                        needle = keyword.lower()
+                        exact = lowered.get(needle)
+                        if exact:
+                            raw_value = row.get(exact)
+                            parsed_value = _parse_float(raw_value)
+                            candidate_columns.append((exact, raw_value, parsed_value))
+                            if parsed_value is not None:
+                                if any_choice is None:
+                                    any_choice = (exact, parsed_value)
+                                if parsed_value > 0 and positive_choice is None:
+                                    positive_choice = (exact, parsed_value)
+                        else:
+                            for key in valid_keys:
+                                if needle in key.lower():
+                                    raw_value = row.get(key)
+                                    parsed_value = _parse_float(raw_value)
+                                    candidate_columns.append((key, raw_value, parsed_value))
+                                    if parsed_value is not None:
+                                        if any_choice is None:
+                                            any_choice = (key, parsed_value)
+                                        if parsed_value > 0 and positive_choice is None:
+                                            positive_choice = (key, parsed_value)
+                                    break
+                except Exception as exc:
+                    self._set_diag(last_error="power_candidates_exception", power_candidates_exception=repr(exc))
+
+            if positive_choice is not None:
+                matched_col, value = positive_choice
+            elif any_choice is not None:
+                matched_col, value = any_choice
+
+            self._set_diag(
+                power_value=value,
+                power_matched_column=matched_col,
+                power_keywords=self.power_keywords,
+                power_candidate_columns=candidate_columns[:10],
+                power_related_columns=power_related_columns,
+            )
+            if value is None:
+                self._set_diag(last_error=self._last_diag.get("last_error") or "no_power_match")
+            return value
+        except Exception as exc:
+            self._set_diag(last_error="power_read_exception", power_exception=repr(exc))
+            return None
 
     def read_temperature_c(self) -> Optional[float]:
         row = self._read_last_row()
@@ -338,6 +428,25 @@ class HwinfoCsvReader:
 _hwinfo_reader: Optional[HwinfoCsvReader] = None
 _hwinfo_snapshot_fn: Optional[Callable[[], Dict[str, Optional[float]]]] = None
 _hwinfo_debug_fn: Optional[Callable[[], Dict[str, object]]] = None
+_csv_field_limit_configured = False
+
+
+def _ensure_csv_field_limit() -> None:
+    """
+    Raise CSV parser field size limit for very wide HWiNFO rows.
+    """
+    global _csv_field_limit_configured
+    if _csv_field_limit_configured:
+        return
+
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            _csv_field_limit_configured = True
+            return
+        except OverflowError:
+            limit = limit // 10
 
 
 def _build_hwinfo_snapshot_reader_from_env(
