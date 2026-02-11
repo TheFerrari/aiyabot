@@ -466,7 +466,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
     @option(
         'strength',
         str,
+        required=False,
         description='The amount in which init_image will be altered (0.0 to 1.0).'
+        
     )
     @option(
         'init_image',

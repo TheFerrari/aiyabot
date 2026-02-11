@@ -137,7 +137,8 @@ class DrawModal(Modal):
             InputText(
                 label='Input your new prompt',
                 value=input_tuple[1],
-                style=discord.InputTextStyle.long
+                style=discord.InputTextStyle.long,
+                required=False
             )
         )
         self.add_item(
