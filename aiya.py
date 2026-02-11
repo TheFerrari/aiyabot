@@ -4,6 +4,7 @@ import os
 import sys
 import io
 import threading
+import importlib.util
 from collections import deque
 from datetime import datetime
 from discord import option
@@ -34,6 +35,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 bot.logger = get_logger(__name__)
+bot.logger.info(f"[startup-python-env] {_python_env_debug()}")
 
 # Optional plotting backend for /power graph
 try:
@@ -50,6 +52,20 @@ except Exception as mpl_error:
     MATPLOTLIB_ERROR = repr(mpl_error)
     mdates = None
     plt = None
+
+
+def _python_env_debug() -> dict:
+    site_paths = [p for p in sys.path if "site-packages" in p.lower()]
+    return {
+        "sys_executable": sys.executable,
+        "sys_version": sys.version.replace("\n", " "),
+        "cwd": os.getcwd(),
+        "matplotlib_spec_found": bool(importlib.util.find_spec("matplotlib")),
+        "matplotlib_available": MATPLOTLIB_AVAILABLE,
+        "matplotlib_error": MATPLOTLIB_ERROR,
+        "site_packages_preview": site_paths[:6],
+        "sys_path_preview": sys.path[:8],
+    }
 
 
 POWER_WINDOWS_S = {
@@ -431,6 +447,11 @@ async def power(ctx, view: str = "live", window: str = "5h", metric: str = "tota
     plot_image = _plot_metric(points, metric_label, metric_unit, window)
     if plot_image is None:
         reason = MATPLOTLIB_ERROR if not MATPLOTLIB_AVAILABLE else "No plottable data."
+        bot.logger.error(
+            "[power-graph-unavailable] reason=%s env=%s",
+            reason,
+            _python_env_debug(),
+        )
         await ctx.respond(
             f"Graph generation is unavailable. Reason: `{reason}`",
             delete_after=25,
@@ -472,6 +493,7 @@ async def batch_download(ctx, message: discord.Message):
 @bot.event
 async def on_ready():
     bot.logger.info(f'Logged in as {bot.user.name} ({bot.user.id})')
+    bot.logger.info(f"[startup-matplotlib] available={MATPLOTLIB_AVAILABLE} error={MATPLOTLIB_ERROR}")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name='drawing tutorials.'))
     await bot.sync_commands()
     if power_monitor is not None:
