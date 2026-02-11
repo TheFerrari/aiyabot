@@ -48,7 +48,13 @@ if enable_generate:
 else:
     print(f"/generate command is DISABLED due to USE_GENERATE={use_generate}")
 
-bot.load_extension('core.chatbotcog')
+use_chatbot = os.getenv("USE_CHATBOT", 'True')
+enable_chatbot = use_chatbot.lower() in ('true', '1', 't')
+if enable_chatbot:
+    print(f"chatbot is ENABLED due to USE_CHATBOT={use_chatbot}")
+    bot.load_extension('core.chatbotcog')
+else:
+    print(f"chatbot is DISABLED due to USE_CHATBOT={use_chatbot}")
 
 # Stats slash command
 @bot.slash_command(name='stats', description='How many images have I generated?')
