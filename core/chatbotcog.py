@@ -16,6 +16,8 @@ warnings.filterwarnings("ignore", category=UserWarning, message="Shard ID None h
 # Configure logging to capture information and errors
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+CORE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(CORE_DIR)
 
 class LlamaChatCog(commands.Cog):
     def __init__(self, bot):
@@ -72,9 +74,9 @@ class LlamaChatCog(commands.Cog):
         try:
             if self.backend == "llama_cpp":
                 import llama_cpp
-                model_dir = os.path.join("core", "Meta-Llama-3.1-8B-Instruct-abliterated-gguf")
+                model_dir = os.path.join(PROJECT_ROOT, "core", "Meta-Llama-3.1-8B-Instruct-abliterated-gguf")
                 primary_model_path = os.path.join(model_dir, "meta-llama-3.1-8b-instruct-abliterated.Q4_K_M.gguf")
-                fallback_model_path = os.path.join("core", "WizzGPT6", "WizzGPTv6.Q8_0.gguf")
+                fallback_model_path = os.path.join(PROJECT_ROOT, "core", "WizzGPT6", "WizzGPTv6.Q8_0.gguf")
 
                 self.n_ctx = 8192
                 try:
