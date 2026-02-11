@@ -32,7 +32,11 @@ class PowerMonitor:
 
     def _step(self, now: float) -> None:
         """Un paso de actualización: lee potencia y actualiza integrales."""
-        watts = self.power_reader()
+        try:
+            watts = self.power_reader()
+        except Exception:
+            # Evita que el hilo de monitoreo termine por errores transitorios del reader.
+            return
         if watts is None:
             # Si no hay lectura, simplemente no integramos nada
             return

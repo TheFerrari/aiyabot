@@ -132,6 +132,20 @@ class HwinfoCsvReader:
     power_keywords: List[str]
     temp_keywords: List[str]
     _last_ok: bool = False
+    _encoding_candidates: List[str] = None
+
+    def __post_init__(self) -> None:
+        if self._encoding_candidates is None:
+            # HWiNFO commonly writes ANSI (cp1252) on Windows.
+            self._encoding_candidates = ["utf-8-sig", "cp1252", "latin-1"]
+
+    def _decode_bytes(self, raw: bytes) -> Optional[str]:
+        for encoding in self._encoding_candidates:
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return None
 
     def _read_last_row(self) -> Optional[Dict[str, str]]:
         path = Path(self.csv_path)
@@ -140,9 +154,13 @@ class HwinfoCsvReader:
             return None
 
         try:
-            with path.open("r", encoding="utf-8-sig", newline="") as handle:
-                data = handle.read()
+            raw = path.read_bytes()
         except OSError:
+            self._last_ok = False
+            return None
+
+        data = self._decode_bytes(raw)
+        if data is None:
             self._last_ok = False
             return None
 
