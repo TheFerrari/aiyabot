@@ -8,6 +8,8 @@ from core import settings
 from core.logging_setup import get_logger
 from dotenv import load_dotenv
 from core.queuehandler import GlobalQueue
+from monitoring.power_monitor import PowerMonitor
+from monitoring.windows_power_reader import env_power_reader, env_temperature_reader
 
 #from core.mask_server import MaskEditorServer
 
@@ -22,6 +24,21 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 bot.logger = get_logger(__name__)
+
+power_monitor = None
+temperature_reader = None
+enable_power_monitor = os.getenv("ENABLE_POWER_MONITOR", "False").lower() in ("true", "1", "t")
+if enable_power_monitor:
+    try:
+        power_monitor = PowerMonitor(
+            power_reader=env_power_reader(),
+            sample_interval=float(os.getenv("POWER_SAMPLE_INTERVAL_S", "5")),
+        )
+        temperature_reader = env_temperature_reader()
+    except Exception as e:
+        print(f"⚠️  No se pudo inicializar PowerMonitor: {e}")
+        power_monitor = None
+        temperature_reader = None
 
 # Startup checks
 try:
@@ -89,6 +106,50 @@ async def ping(ctx):
     embed = discord.Embed(title=title, color=discord.Color.random())
     await ctx.respond(content=f'<@{ctx.author.id}>', embed=embed, delete_after=10)
 
+
+@bot.slash_command(name='power', description='Muestra métricas de consumo energético del host')
+async def power(ctx):
+    if power_monitor is None:
+        await ctx.respond(
+            "Power monitor deshabilitado. Activa ENABLE_POWER_MONITOR=True en .env",
+            delete_after=20,
+        )
+        return
+
+    stats = power_monitor.get_stats()
+
+    if stats["current_w"] is None:
+        description = (
+            "Aún sin lectura utilizable.\n"
+            "Si usas batería, espera una ventana de muestreo.\n"
+            "También puedes probar POWER_READER=mock o revisar tu log de HWiNFO."
+        )
+    else:
+        temp_line = ""
+        if temperature_reader is not None:
+            try:
+                temp_c = temperature_reader()
+                if temp_c is not None:
+                    temp_line = f"Temp: `{temp_c:.1f} °C`\n"
+            except Exception:
+                temp_line = ""
+
+        description = (
+            f"Current: `{stats['current_w']:.2f} W`\n"
+            f"Min: `{stats['min_w']:.2f} W`\n"
+            f"Max: `{stats['max_w']:.2f} W`\n"
+            f"{temp_line}"
+            f"Energy: `{stats['energy_Wh']:.3f} Wh` (`{stats['energy_kWh']:.6f} kWh`)\n"
+            f"Elapsed: `{stats['elapsed_s']:.1f} s`"
+        )
+
+    embed = discord.Embed(
+        title='Power Monitor',
+        description=description,
+        color=settings.global_var.embed_color,
+    )
+    await ctx.respond(embed=embed, delete_after=30)
+
 # Context menu commands
 @bot.message_command(name="Get Image Info")
 async def get_image_info(ctx, message: discord.Message):
@@ -108,6 +169,9 @@ async def on_ready():
     bot.logger.info(f'Logged in as {bot.user.name} ({bot.user.id})')
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name='drawing tutorials.'))
     await bot.sync_commands()
+    if power_monitor is not None:
+        power_monitor.start_background()
+        bot.logger.info("PowerMonitor iniciado en segundo plano")
     for guild in bot.guilds:
         print(f"I'm active in {guild.id} a.k.a {guild}!")
 
@@ -135,6 +199,8 @@ async def on_guild_join(guild):
 
 # Shutdown function
 async def shutdown(bot):
+    if power_monitor is not None:
+        power_monitor.stop_background()
     await bot.close()
 
 # Run the bot
