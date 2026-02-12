@@ -16,9 +16,9 @@ from dotenv import load_dotenv
 from core.queuehandler import GlobalQueue
 from monitoring.power_monitor import PowerMonitor
 from monitoring.windows_power_reader import (
-    env_hwinfo_debug_reader,
-    env_hwinfo_snapshot_reader,
     env_power_reader,
+    env_sensor_debug_reader,
+    env_sensor_snapshot_reader,
     env_temperature_reader,
 )
 
@@ -93,8 +93,8 @@ power_history_lock = threading.Lock()
 
 power_monitor = None
 temperature_reader = None
-hwinfo_snapshot_reader = None
-hwinfo_debug_reader = None
+sensor_snapshot_reader = None
+sensor_debug_reader = None
 
 
 def _window_seconds(window: str) -> int:
@@ -175,7 +175,7 @@ def _record_power_sample(ts: float, watts: float):
         "total_w": float(watts),
     }
 
-    snapshot_reader = hwinfo_snapshot_reader
+    snapshot_reader = sensor_snapshot_reader
     if snapshot_reader is not None:
         try:
             snapshot = snapshot_reader() or {}
@@ -205,15 +205,15 @@ if enable_power_monitor:
             sample_interval=float(os.getenv("POWER_SAMPLE_INTERVAL_S", "5")),
         )
         temperature_reader = env_temperature_reader()
-        hwinfo_snapshot_reader = env_hwinfo_snapshot_reader()
-        hwinfo_debug_reader = env_hwinfo_debug_reader()
+        sensor_snapshot_reader = env_sensor_snapshot_reader()
+        sensor_debug_reader = env_sensor_debug_reader()
         power_monitor.sample_callback = _record_power_sample
     except Exception as e:
         print(f"Warning: failed to initialize PowerMonitor: {e}")
         power_monitor = None
         temperature_reader = None
-        hwinfo_snapshot_reader = None
-        hwinfo_debug_reader = None
+        sensor_snapshot_reader = None
+        sensor_debug_reader = None
 
 # Startup checks
 try:
@@ -321,10 +321,14 @@ async def power(ctx, view: str = "live", window: str = "5h", metric: str = "tota
     if metric not in POWER_METRICS:
         metric = "total"
 
-    mode = os.getenv("POWER_READER", "hwinfo_csv")
-    csv_path = os.getenv("HWINFO_CSV_PATH", "")
+    mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
+    sensor_source = ""
+    if mode == "hwinfo_csv":
+        sensor_source = os.getenv("HWINFO_CSV_PATH", "")
+    elif mode in {"librehardwaremonitor", "lhm", "lhm_json"}:
+        sensor_source = os.getenv("LHM_API_URL", "http://localhost:8085/data.json")
     bot.logger.info(
-        f"[power] user={ctx.author} mode={mode} view={view} window={window} metric={metric} csv_path={csv_path} sample_interval={os.getenv('POWER_SAMPLE_INTERVAL_S', '5')}"
+        f"[power] user={ctx.author} mode={mode} view={view} window={window} metric={metric} source={sensor_source} sample_interval={os.getenv('POWER_SAMPLE_INTERVAL_S', '5')}"
     )
 
     stats = power_monitor.get_stats()
@@ -334,9 +338,9 @@ async def power(ctx, view: str = "live", window: str = "5h", metric: str = "tota
         stats = power_monitor.get_stats()
 
     debug_info = {}
-    if hwinfo_debug_reader is not None:
+    if sensor_debug_reader is not None:
         try:
-            debug_info = hwinfo_debug_reader() or {}
+            debug_info = sensor_debug_reader() or {}
         except Exception as e:
             debug_info = {"debug_reader_error": str(e)}
     if debug_info:
@@ -351,9 +355,9 @@ async def power(ctx, view: str = "live", window: str = "5h", metric: str = "tota
             )
         else:
             snapshot = {}
-            if hwinfo_snapshot_reader is not None:
+            if sensor_snapshot_reader is not None:
                 try:
-                    snapshot = hwinfo_snapshot_reader() or {}
+                    snapshot = sensor_snapshot_reader() or {}
                 except Exception:
                     snapshot = {}
 

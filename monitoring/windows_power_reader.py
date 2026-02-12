@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+import requests
+
 
 class _SYSTEM_POWER_STATUS(ctypes.Structure):
     _fields_ = [
@@ -425,9 +427,297 @@ class HwinfoCsvReader:
         }
 
 
+@dataclass
+class LibreHardwareMonitorJsonReader:
+    """
+    Reads live sensor values from LibreHardwareMonitor HTTP JSON endpoint.
+    """
+
+    api_url: str
+    request_timeout_s: float
+    power_keywords: List[str]
+    temp_keywords: List[str]
+    _last_diag: Optional[Dict[str, object]] = None
+
+    def __post_init__(self) -> None:
+        if self._last_diag is None:
+            self._last_diag = {}
+
+    def _set_diag(self, **kwargs: object) -> None:
+        self._last_diag.update(kwargs)
+
+    def get_debug_info(self) -> Dict[str, object]:
+        return dict(self._last_diag)
+
+    def _fetch_payload(self) -> Optional[Dict[str, object]]:
+        self._set_diag(api_url=self.api_url, request_timeout_s=self.request_timeout_s)
+        try:
+            response = requests.get(self.api_url, timeout=self.request_timeout_s)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            self._set_diag(last_error="lhm_http_error", lhm_exception=repr(exc))
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            self._set_diag(
+                last_error="lhm_json_parse_error",
+                lhm_exception=repr(exc),
+                http_status=response.status_code,
+            )
+            return None
+
+        if not isinstance(payload, dict):
+            self._set_diag(
+                last_error="lhm_json_not_object",
+                payload_type=type(payload).__name__,
+                http_status=response.status_code,
+            )
+            return None
+
+        self._set_diag(last_error=None, http_status=response.status_code)
+        return payload
+
+    def _flatten_sensors(
+        self,
+        node: Dict[str, object],
+        path: Optional[List[str]] = None,
+    ) -> List[Dict[str, object]]:
+        current_path = path or []
+        text = str(node.get("Text") or "").strip()
+        new_path = current_path + ([text] if text else [])
+
+        out: List[Dict[str, object]] = []
+        sensor_type = node.get("Type")
+        sensor_id = node.get("SensorId")
+        if sensor_type and sensor_id:
+            out.append(
+                {
+                    "path": " / ".join(new_path),
+                    "name": text,
+                    "type": str(sensor_type),
+                    "value": node.get("Value"),
+                    "min": node.get("Min"),
+                    "max": node.get("Max"),
+                    "sensor_id": str(sensor_id),
+                    "raw_value": node.get("RawValue"),
+                }
+            )
+
+        children = node.get("Children", [])
+        if isinstance(children, list):
+            for child in children:
+                if isinstance(child, dict):
+                    out.extend(self._flatten_sensors(child, new_path))
+        return out
+
+    def _read_sensors(self) -> List[Dict[str, object]]:
+        payload = self._fetch_payload()
+        if payload is None:
+            return []
+        sensors = self._flatten_sensors(payload)
+        self._set_diag(
+            sensor_count=len(sensors),
+            sample_sensor_paths=[s.get("path") for s in sensors[:15]],
+        )
+        return sensors
+
+    @staticmethod
+    def _value_from_sensor(sensor: Dict[str, object]) -> Optional[float]:
+        value = _parse_float(str(sensor.get("raw_value", "")))
+        if value is not None:
+            return value
+        return _parse_float(str(sensor.get("value", "")))
+
+    @staticmethod
+    def _exact_sensor_match(sensor: Dict[str, object], needle: str) -> bool:
+        for key in ("path", "name", "sensor_id", "type"):
+            candidate = str(sensor.get(key, "")).strip().lower()
+            if candidate and candidate == needle:
+                return True
+        return False
+
+    @staticmethod
+    def _contains_sensor_match(sensor: Dict[str, object], needle: str) -> bool:
+        for key in ("path", "name", "sensor_id", "type"):
+            candidate = str(sensor.get(key, "")).strip().lower()
+            if candidate and needle in candidate:
+                return True
+        return False
+
+    def _pick_value_from_sensors_with_key(
+        self,
+        sensors: List[Dict[str, object]],
+        keywords: List[str],
+        type_filter: Optional[str] = None,
+        prefer_positive: bool = False,
+    ) -> Tuple[Optional[float], Optional[Dict[str, object]]]:
+        if not sensors:
+            return None, None
+
+        filtered = sensors
+        if type_filter:
+            lowered_type = type_filter.lower()
+            filtered = [s for s in sensors if str(s.get("type", "")).lower() == lowered_type]
+
+        first_any: Optional[Tuple[float, Dict[str, object]]] = None
+        for exact_only in (True, False):
+            for keyword in keywords:
+                needle = keyword.strip().lower()
+                if not needle:
+                    continue
+                for sensor in filtered:
+                    matched = (
+                        self._exact_sensor_match(sensor, needle)
+                        if exact_only
+                        else self._contains_sensor_match(sensor, needle)
+                    )
+                    if not matched:
+                        continue
+                    value = self._value_from_sensor(sensor)
+                    if value is None:
+                        continue
+                    if first_any is None:
+                        first_any = (value, sensor)
+                    if not prefer_positive or value > 0:
+                        return value, sensor
+
+        if first_any is not None:
+            return first_any
+        return None, None
+
+    def read_power_w(self) -> Optional[float]:
+        sensors = self._read_sensors()
+        value, sensor = self._pick_value_from_sensors_with_key(
+            sensors,
+            self.power_keywords,
+            type_filter="Power",
+            prefer_positive=True,
+        )
+        if value is None:
+            value, sensor = self._pick_value_from_sensors_with_key(
+                sensors,
+                self.power_keywords,
+                prefer_positive=True,
+            )
+
+        self._set_diag(
+            power_value=value,
+            power_keywords=self.power_keywords,
+            power_matched_sensor_path=(None if sensor is None else sensor.get("path")),
+            power_matched_sensor_id=(None if sensor is None else sensor.get("sensor_id")),
+        )
+        if value is None:
+            self._set_diag(last_error=self._last_diag.get("last_error") or "no_power_match")
+        return value
+
+    def read_temperature_c(self) -> Optional[float]:
+        sensors = self._read_sensors()
+        value, sensor = self._pick_value_from_sensors_with_key(
+            sensors,
+            self.temp_keywords,
+            type_filter="Temperature",
+        )
+        if value is None:
+            value, sensor = self._pick_value_from_sensors_with_key(
+                sensors,
+                self.temp_keywords,
+            )
+
+        self._set_diag(
+            temperature_value=value,
+            temp_keywords=self.temp_keywords,
+            temperature_matched_sensor_path=(None if sensor is None else sensor.get("path")),
+            temperature_matched_sensor_id=(None if sensor is None else sensor.get("sensor_id")),
+        )
+        if value is None:
+            self._set_diag(last_error=self._last_diag.get("last_error") or "no_temperature_match")
+        return value
+
+    def read_snapshot(
+        self,
+        total_power_keywords: List[str],
+        cpu_power_keywords: List[str],
+        gpu_power_keywords: List[str],
+        stapm_power_keywords: List[str],
+        cpu_temp_keywords: List[str],
+        gpu_temp_keywords: List[str],
+        soc_temp_keywords: List[str],
+    ) -> Dict[str, Optional[float]]:
+        sensors = self._read_sensors()
+        total_power_w, total_sensor = self._pick_value_from_sensors_with_key(
+            sensors,
+            total_power_keywords,
+            type_filter="Power",
+            prefer_positive=True,
+        )
+        cpu_package_power_w, cpu_sensor = self._pick_value_from_sensors_with_key(
+            sensors,
+            cpu_power_keywords,
+            type_filter="Power",
+            prefer_positive=True,
+        )
+        gpu_asic_power_w, gpu_sensor = self._pick_value_from_sensors_with_key(
+            sensors,
+            gpu_power_keywords,
+            type_filter="Power",
+            prefer_positive=True,
+        )
+        apu_stapm_w, stapm_sensor = self._pick_value_from_sensors_with_key(
+            sensors,
+            stapm_power_keywords,
+            type_filter="Power",
+            prefer_positive=True,
+        )
+        cpu_temp_c, cpu_temp_sensor = self._pick_value_from_sensors_with_key(
+            sensors,
+            cpu_temp_keywords,
+            type_filter="Temperature",
+        )
+        gpu_temp_c, gpu_temp_sensor = self._pick_value_from_sensors_with_key(
+            sensors,
+            gpu_temp_keywords,
+            type_filter="Temperature",
+        )
+        soc_temp_c, soc_temp_sensor = self._pick_value_from_sensors_with_key(
+            sensors,
+            soc_temp_keywords,
+            type_filter="Temperature",
+        )
+
+        if total_power_w is None and cpu_package_power_w is not None:
+            total_power_w = cpu_package_power_w
+
+        self._set_diag(
+            snapshot_matches={
+                "total_power_w": None if total_sensor is None else total_sensor.get("path"),
+                "cpu_package_power_w": None if cpu_sensor is None else cpu_sensor.get("path"),
+                "gpu_asic_power_w": None if gpu_sensor is None else gpu_sensor.get("path"),
+                "apu_stapm_w": None if stapm_sensor is None else stapm_sensor.get("path"),
+                "cpu_temp_c": None if cpu_temp_sensor is None else cpu_temp_sensor.get("path"),
+                "gpu_temp_c": None if gpu_temp_sensor is None else gpu_temp_sensor.get("path"),
+                "soc_temp_c": None if soc_temp_sensor is None else soc_temp_sensor.get("path"),
+            }
+        )
+
+        return {
+            "total_power_w": total_power_w,
+            "cpu_package_power_w": cpu_package_power_w,
+            "gpu_asic_power_w": gpu_asic_power_w,
+            "apu_stapm_w": apu_stapm_w,
+            "cpu_temp_c": cpu_temp_c,
+            "gpu_temp_c": gpu_temp_c,
+            "soc_temp_c": soc_temp_c,
+        }
+
+
 _hwinfo_reader: Optional[HwinfoCsvReader] = None
 _hwinfo_snapshot_fn: Optional[Callable[[], Dict[str, Optional[float]]]] = None
 _hwinfo_debug_fn: Optional[Callable[[], Dict[str, object]]] = None
+_lhm_reader: Optional[LibreHardwareMonitorJsonReader] = None
+_lhm_snapshot_fn: Optional[Callable[[], Dict[str, Optional[float]]]] = None
+_lhm_debug_fn: Optional[Callable[[], Dict[str, object]]] = None
 _csv_field_limit_configured = False
 
 
@@ -533,6 +823,104 @@ def _build_hwinfo_reader_from_env() -> HwinfoCsvReader:
     )
 
 
+def _build_lhm_snapshot_reader_from_env(
+    reader: LibreHardwareMonitorJsonReader,
+) -> Callable[[], Dict[str, Optional[float]]]:
+    total_power_keywords = _split_keywords(
+        os.getenv(
+            "LHM_TOTAL_POWER_KEYWORDS",
+            "Total System Power,Powers / Package,CPU Package Power,Core+SoC+SR Power (SVI3 TFN)",
+        )
+    )
+    cpu_power_keywords = _split_keywords(
+        os.getenv(
+            "LHM_CPU_POWER_KEYWORDS",
+            "Powers / Package,CPU Package Power,Core+SoC+SR Power (SVI3 TFN)",
+        )
+    )
+    gpu_power_keywords = _split_keywords(
+        os.getenv(
+            "LHM_GPU_POWER_KEYWORDS",
+            "Powers / GPU Core,GPU ASIC Power",
+        )
+    )
+    stapm_power_keywords = _split_keywords(
+        os.getenv(
+            "LHM_STAPM_POWER_KEYWORDS",
+            "APU STAPM",
+        )
+    )
+    cpu_temp_keywords = _split_keywords(
+        os.getenv(
+            "LHM_CPU_TEMP_KEYWORDS",
+            "Temperatures / Core (Tctl/Tdie),CPU (Tctl/Tdie),CPU Core,Core Temperatures (avg)",
+        )
+    )
+    gpu_temp_keywords = _split_keywords(
+        os.getenv(
+            "LHM_GPU_TEMP_KEYWORDS",
+            "Temperatures / GPU VR SoC,GPU Temperature,APU GFX",
+        )
+    )
+    soc_temp_keywords = _split_keywords(
+        os.getenv(
+            "LHM_SOC_TEMP_KEYWORDS",
+            "Temperatures / GPU VR SoC,CPU SOC,SoC",
+        )
+    )
+
+    def _snapshot() -> Dict[str, Optional[float]]:
+        return reader.read_snapshot(
+            total_power_keywords=total_power_keywords,
+            cpu_power_keywords=cpu_power_keywords,
+            gpu_power_keywords=gpu_power_keywords,
+            stapm_power_keywords=stapm_power_keywords,
+            cpu_temp_keywords=cpu_temp_keywords,
+            gpu_temp_keywords=gpu_temp_keywords,
+            soc_temp_keywords=soc_temp_keywords,
+        )
+
+    return _snapshot
+
+
+def _build_lhm_reader_from_env() -> LibreHardwareMonitorJsonReader:
+    api_url = os.getenv("LHM_API_URL", "http://localhost:8085/data.json").strip()
+    if not api_url:
+        raise ValueError("LHM_API_URL is required for POWER_READER=librehardwaremonitor")
+
+    request_timeout_s = float(os.getenv("LHM_REQUEST_TIMEOUT_S", "5"))
+    power_keywords = _split_keywords(
+        os.getenv(
+            "LHM_POWER_KEYWORDS",
+            "Total System Power,Powers / Package,CPU Package Power,Core+SoC+SR Power (SVI3 TFN)",
+        )
+    )
+    temp_keywords = _split_keywords(
+        os.getenv(
+            "LHM_TEMP_KEYWORDS",
+            "Temperatures / Core (Tctl/Tdie),CPU (Tctl/Tdie),CPU Core",
+        )
+    )
+    return LibreHardwareMonitorJsonReader(
+        api_url=api_url,
+        request_timeout_s=request_timeout_s,
+        power_keywords=power_keywords,
+        temp_keywords=temp_keywords,
+    )
+
+
+def _power_reader_mode() -> str:
+    return os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
+
+
+def _is_hwinfo_mode(mode: str) -> bool:
+    return mode == "hwinfo_csv"
+
+
+def _is_lhm_mode(mode: str) -> bool:
+    return mode in {"librehardwaremonitor", "lhm_json", "lhm"}
+
+
 def env_power_reader() -> Callable[[], Optional[float]]:
     """
     Build a reader using environment flags:
@@ -546,9 +934,15 @@ def env_power_reader() -> Callable[[], Optional[float]]:
       - HWINFO_CSV_PATH=path to HWiNFO logging CSV
       - HWINFO_POWER_COLUMN_KEYWORDS=comma-separated list
       - HWINFO_TEMP_COLUMN_KEYWORDS=comma-separated list (for env_temperature_reader)
+    - POWER_READER=librehardwaremonitor (aliases: lhm, lhm_json)
+      - LHM_API_URL=http://localhost:8085/data.json
+      - LHM_REQUEST_TIMEOUT_S=5
+      - LHM_POWER_KEYWORDS=comma-separated list
+      - LHM_TEMP_KEYWORDS=comma-separated list (for env_temperature_reader)
     """
     global _hwinfo_reader, _hwinfo_snapshot_fn, _hwinfo_debug_fn
-    mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
+    global _lhm_reader, _lhm_snapshot_fn, _lhm_debug_fn
+    mode = _power_reader_mode()
 
     if mode == "mock":
         mock_watts = float(os.getenv("MOCK_POWER_WATTS", "120"))
@@ -557,11 +951,16 @@ def env_power_reader() -> Callable[[], Optional[float]]:
             return mock_watts
 
         return _mock_reader
-    if mode == "hwinfo_csv":
+    if _is_hwinfo_mode(mode):
         _hwinfo_reader = _build_hwinfo_reader_from_env()
         _hwinfo_snapshot_fn = _build_hwinfo_snapshot_reader_from_env(_hwinfo_reader)
         _hwinfo_debug_fn = _hwinfo_reader.get_debug_info
         return _hwinfo_reader.read_power_w
+    if _is_lhm_mode(mode):
+        _lhm_reader = _build_lhm_reader_from_env()
+        _lhm_snapshot_fn = _build_lhm_snapshot_reader_from_env(_lhm_reader)
+        _lhm_debug_fn = _lhm_reader.get_debug_info
+        return _lhm_reader.read_power_w
 
     capacity_wh = float(os.getenv("BATTERY_CAPACITY_WH", "50"))
     min_interval_s = float(os.getenv("BATTERY_MIN_INTERVAL_S", "20"))
@@ -574,46 +973,83 @@ def env_power_reader() -> Callable[[], Optional[float]]:
 def env_temperature_reader() -> Optional[Callable[[], Optional[float]]]:
     """
     Returns a temperature reader when current POWER_READER supports it.
-    Currently only available for POWER_READER=hwinfo_csv.
+    Available for POWER_READER=hwinfo_csv and POWER_READER=librehardwaremonitor.
     """
     global _hwinfo_reader, _hwinfo_snapshot_fn, _hwinfo_debug_fn
-    mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
-    if mode != "hwinfo_csv":
-        return None
-    if _hwinfo_reader is None:
-        _hwinfo_reader = _build_hwinfo_reader_from_env()
-        _hwinfo_debug_fn = _hwinfo_reader.get_debug_info
-    if _hwinfo_snapshot_fn is None:
-        _hwinfo_snapshot_fn = _build_hwinfo_snapshot_reader_from_env(_hwinfo_reader)
-    return _hwinfo_reader.read_temperature_c
+    global _lhm_reader, _lhm_snapshot_fn, _lhm_debug_fn
+    mode = _power_reader_mode()
+    if _is_hwinfo_mode(mode):
+        if _hwinfo_reader is None:
+            _hwinfo_reader = _build_hwinfo_reader_from_env()
+            _hwinfo_debug_fn = _hwinfo_reader.get_debug_info
+        if _hwinfo_snapshot_fn is None:
+            _hwinfo_snapshot_fn = _build_hwinfo_snapshot_reader_from_env(_hwinfo_reader)
+        return _hwinfo_reader.read_temperature_c
+    if _is_lhm_mode(mode):
+        if _lhm_reader is None:
+            _lhm_reader = _build_lhm_reader_from_env()
+            _lhm_debug_fn = _lhm_reader.get_debug_info
+        if _lhm_snapshot_fn is None:
+            _lhm_snapshot_fn = _build_lhm_snapshot_reader_from_env(_lhm_reader)
+        return _lhm_reader.read_temperature_c
+    return None
+
+
+def env_sensor_snapshot_reader() -> Optional[Callable[[], Dict[str, Optional[float]]]]:
+    """
+    Returns a detailed sensor snapshot reader for the active power backend.
+    """
+    global _hwinfo_reader, _hwinfo_snapshot_fn, _hwinfo_debug_fn
+    global _lhm_reader, _lhm_snapshot_fn, _lhm_debug_fn
+    mode = _power_reader_mode()
+    if _is_hwinfo_mode(mode):
+        if _hwinfo_reader is None:
+            _hwinfo_reader = _build_hwinfo_reader_from_env()
+            _hwinfo_debug_fn = _hwinfo_reader.get_debug_info
+        if _hwinfo_snapshot_fn is None:
+            _hwinfo_snapshot_fn = _build_hwinfo_snapshot_reader_from_env(_hwinfo_reader)
+        return _hwinfo_snapshot_fn
+    if _is_lhm_mode(mode):
+        if _lhm_reader is None:
+            _lhm_reader = _build_lhm_reader_from_env()
+            _lhm_debug_fn = _lhm_reader.get_debug_info
+        if _lhm_snapshot_fn is None:
+            _lhm_snapshot_fn = _build_lhm_snapshot_reader_from_env(_lhm_reader)
+        return _lhm_snapshot_fn
+    return None
+
+
+def env_sensor_debug_reader() -> Optional[Callable[[], Dict[str, object]]]:
+    """
+    Returns a diagnostic reader for the active sensor backend.
+    """
+    global _hwinfo_reader, _hwinfo_debug_fn
+    global _lhm_reader, _lhm_debug_fn
+    mode = _power_reader_mode()
+    if _is_hwinfo_mode(mode):
+        if _hwinfo_reader is None:
+            _hwinfo_reader = _build_hwinfo_reader_from_env()
+        if _hwinfo_debug_fn is None:
+            _hwinfo_debug_fn = _hwinfo_reader.get_debug_info
+        return _hwinfo_debug_fn
+    if _is_lhm_mode(mode):
+        if _lhm_reader is None:
+            _lhm_reader = _build_lhm_reader_from_env()
+        if _lhm_debug_fn is None:
+            _lhm_debug_fn = _lhm_reader.get_debug_info
+        return _lhm_debug_fn
+    return None
 
 
 def env_hwinfo_snapshot_reader() -> Optional[Callable[[], Dict[str, Optional[float]]]]:
     """
-    Returns a detailed HWiNFO snapshot reader when POWER_READER=hwinfo_csv.
+    Backward-compatible alias of env_sensor_snapshot_reader.
     """
-    global _hwinfo_reader, _hwinfo_snapshot_fn, _hwinfo_debug_fn
-    mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
-    if mode != "hwinfo_csv":
-        return None
-    if _hwinfo_reader is None:
-        _hwinfo_reader = _build_hwinfo_reader_from_env()
-        _hwinfo_debug_fn = _hwinfo_reader.get_debug_info
-    if _hwinfo_snapshot_fn is None:
-        _hwinfo_snapshot_fn = _build_hwinfo_snapshot_reader_from_env(_hwinfo_reader)
-    return _hwinfo_snapshot_fn
+    return env_sensor_snapshot_reader()
 
 
 def env_hwinfo_debug_reader() -> Optional[Callable[[], Dict[str, object]]]:
     """
-    Returns a diagnostic reader for HWiNFO CSV mode.
+    Backward-compatible alias of env_sensor_debug_reader.
     """
-    global _hwinfo_reader, _hwinfo_debug_fn
-    mode = os.getenv("POWER_READER", "hwinfo_csv").strip().lower()
-    if mode != "hwinfo_csv":
-        return None
-    if _hwinfo_reader is None:
-        _hwinfo_reader = _build_hwinfo_reader_from_env()
-    if _hwinfo_debug_fn is None:
-        _hwinfo_debug_fn = _hwinfo_reader.get_debug_info
-    return _hwinfo_debug_fn
+    return env_sensor_debug_reader()
