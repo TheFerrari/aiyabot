@@ -157,6 +157,12 @@ SD_START_BAT_PATH = "C:\\stable-diffusion-webui\\webui-user.bat"
 Optional:
 
 ```dotenv
+# Startup behavior on boot:
+# - True: force auto-start attempt before startup checks.
+# - False: skip auto-start even if start config exists.
+# - empty: auto-start if start config exists.
+SD_AUTO_START_ON_BOOT = "True"
+
 # Maximum seconds AIYA waits for /sdapi to come online after start/restart.
 SD_START_TIMEOUT_S = 120
 

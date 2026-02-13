@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import discord
 import os
 import sys
@@ -263,14 +263,84 @@ if enable_power_monitor:
         sensor_snapshot_reader = None
         sensor_debug_reader = None
 
+# SD process bootstrap
+def _env_truthy(value: str) -> bool:
+    return value.strip().lower() in ("true", "1", "t", "yes", "y", "on")
+
+
+def _clean_env(var_name: str) -> str:
+    return (os.getenv(var_name) or "").strip().strip('"').strip("'")
+
+
+def _has_sd_start_config() -> bool:
+    if _clean_env("SD_START_COMMAND"):
+        return True
+    if _clean_env("SD_START_BAT_PATH"):
+        return True
+    return bool(_clean_env("SD_FOLDER_PATH") and _clean_env("SD_START_BAT_FILE_NAME"))
+
+
+def _should_auto_start_sd_on_boot() -> bool:
+    """
+    Auto-start policy:
+    - If SD_AUTO_START_ON_BOOT is set, it is authoritative.
+    - Otherwise, auto-start is enabled when SD start configuration exists.
+    """
+    configured_flag = (os.getenv("SD_AUTO_START_ON_BOOT") or "").strip()
+    if configured_flag:
+        return _env_truthy(configured_flag)
+    return _has_sd_start_config()
+
+
+def _safe_int_env(var_name: str, default: int) -> int:
+    value = os.getenv(var_name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        bot.logger.warning("[sd-autostart] Invalid integer in %s=%s. Using %s.", var_name, value, default)
+        return default
+
+
+def _auto_start_sd_if_needed() -> None:
+    if not _should_auto_start_sd_on_boot():
+        bot.logger.info("[sd-autostart] Disabled. Set SD_AUTO_START_ON_BOOT=True to force-enable.")
+        return
+
+    try:
+        from monitoring.stable_diffusion_manager import StableDiffusionProcessManager
+    except Exception as e:
+        bot.logger.warning("[sd-autostart] Could not import process manager: %s", e)
+        return
+
+    manager = StableDiffusionProcessManager()
+    status = manager.get_status()
+    if status.get("api_online"):
+        bot.logger.info("[sd-autostart] SD API is already online at %s. Skipping autostart.", status.get("webui_url"))
+        return
+
+    timeout_s = _safe_int_env("SD_START_TIMEOUT_S", 120)
+    bot.logger.info("[sd-autostart] SD API offline. Attempting automatic start (timeout=%ss).", timeout_s)
+    result = manager.start(wait_for_api=True, timeout_s=timeout_s)
+    if result.ok and result.api_online:
+        bot.logger.info("[sd-autostart] %s", result.message)
+        return
+    if result.ok and not result.api_online:
+        bot.logger.warning("[sd-autostart] %s", result.message)
+        return
+    bot.logger.warning("[sd-autostart] Start failed: %s", result.message)
+
+
 # Startup checks
 try:
+    _auto_start_sd_if_needed()
     settings.startup_check()
     settings.files_check()
-    print("✅ Inicialización completada exitosamente")
+    print("âœ… InicializaciÃ³n completada exitosamente")
 except Exception as e:
-    print(f"⚠️  Advertencia durante la inicialización: {e}")
-    print("El bot continuará ejecutándose, pero algunas funciones pueden no estar disponibles.")
+    print(f"âš ï¸  Advertencia durante la inicializaciÃ³n: {e}")
+    print("El bot continuarÃ¡ ejecutÃ¡ndose, pero algunas funciones pueden no estar disponibles.")
 
 # Load extensions
 bot.load_extension('core.settingscog')
@@ -560,7 +630,7 @@ async def on_ready():
 # Event: on_raw_reaction_add
 @bot.event
 async def on_raw_reaction_add(ctx):
-    if ctx.emoji.name == '❌':
+    if ctx.emoji.name == 'âŒ':
         try:
             end_user = f'{ctx.user_id}'
             message = await bot.get_channel(ctx.channel_id).fetch_message(ctx.message_id)
@@ -604,3 +674,4 @@ except Exception as e:
     asyncio.run(shutdown(bot))
 finally:
     sys.exit(0)
+
