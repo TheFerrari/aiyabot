@@ -226,6 +226,7 @@ except Exception as e:
 
 # Load extensions
 bot.load_extension('core.settingscog')
+bot.load_extension('core.sdcontrolcog')
 bot.load_extension('core.stablecog')
 bot.load_extension('core.upscalecog')
 bot.load_extension('core.identifycog')

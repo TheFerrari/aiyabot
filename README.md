@@ -105,6 +105,7 @@ Use '!stop' to stop the current text generation. Use '!reset' to reset the conve
 - /stats command - shows how many /draw commands have been used.
 - /info command - basic usage guide, other info, and download batch images.
 - /upscale command - resize your image.
+- /sdcontrol command - start, stop, restart, or inspect the local Stable Diffusion WebUI process (admin-only by default).
 - live preview during generation.
 - chatbot using gpt4all to run llama3-8B-instruct (using gpt4all to run a gguf version on small Nvidia or AMD cards, or CPU). (Not fully implemented yet, testing)
 - buttons - certain outputs will contain buttons.
@@ -135,6 +136,33 @@ Use '!stop' to stop the current text generation. Use '!reset' to reset the conve
 TOKEN = put your bot token here
 ```
 - Run AIYA by running launch.bat (or launch.sh for Linux)
+
+### Optional process-control environment variables
+
+If you want AIYA to start/stop Stable Diffusion itself via `/sdcontrol`, set one of these startup methods:
+
+```dotenv
+# Preferred: full startup command
+SD_START_COMMAND = "webui-user.bat --api"
+SD_START_WORKDIR = "C:\\stable-diffusion-webui"
+
+# Or: explicit bat path
+SD_START_BAT_PATH = "C:\\stable-diffusion-webui\\webui-user.bat"
+
+# Backward-compatible alternative:
+# SD_FOLDER_PATH = "C:\\stable-diffusion-webui"
+# SD_START_BAT_FILE_NAME = "webui-user.bat"
+```
+
+Optional:
+
+```dotenv
+# Maximum seconds AIYA waits for /sdapi to come online after start/restart.
+SD_START_TIMEOUT_S = 120
+
+# Extra allowed users for /sdcontrol (comma, semicolon, or space-separated Discord IDs).
+SD_CONTROL_ALLOWED_USER_IDS = "123456789012345678,987654321098765432"
+```
 
 ## Deploy with Docker
 
