@@ -15,6 +15,7 @@ from core.logging_setup import get_logger
 from dotenv import load_dotenv
 from core.queuehandler import GlobalQueue
 from monitoring.power_monitor import PowerMonitor
+from monitoring.power_history_store import SQLitePowerHistoryStore
 from monitoring.windows_power_reader import (
     env_power_reader,
     env_sensor_debug_reader,
@@ -91,6 +92,37 @@ HISTORY_MAX_SAMPLES = int(os.getenv("POWER_HISTORY_MAX_SAMPLES", "30000"))
 power_history = deque(maxlen=HISTORY_MAX_SAMPLES)
 power_history_lock = threading.Lock()
 
+power_history_persist_raw = os.getenv("POWER_HISTORY_PERSIST", "True")
+POWER_HISTORY_PERSIST = power_history_persist_raw.lower() in ("true", "1", "t")
+POWER_HISTORY_DB_PATH = os.getenv("POWER_HISTORY_DB_PATH", "resources/power_history.sqlite3").strip() or "resources/power_history.sqlite3"
+try:
+    POWER_HISTORY_RETENTION_DAYS = float(os.getenv("POWER_HISTORY_RETENTION_DAYS", "30"))
+except ValueError:
+    POWER_HISTORY_RETENTION_DAYS = 30.0
+
+power_history_store = None
+if POWER_HISTORY_PERSIST:
+    try:
+        retention_days = POWER_HISTORY_RETENTION_DAYS if POWER_HISTORY_RETENTION_DAYS > 0 else None
+        power_history_store = SQLitePowerHistoryStore(
+            db_path=POWER_HISTORY_DB_PATH,
+            retention_days=retention_days,
+        )
+        restored_history = power_history_store.load_latest(HISTORY_MAX_SAMPLES)
+        with power_history_lock:
+            power_history.extend(restored_history)
+        bot.logger.info(
+            "[power-history] sqlite enabled db=%s restored_samples=%s retention_days=%s",
+            POWER_HISTORY_DB_PATH,
+            len(restored_history),
+            retention_days,
+        )
+    except Exception as e:
+        bot.logger.warning("[power-history] failed to initialize sqlite store: %s", e)
+        power_history_store = None
+else:
+    bot.logger.info("[power-history] sqlite disabled by POWER_HISTORY_PERSIST=%s", power_history_persist_raw)
+
 power_monitor = None
 temperature_reader = None
 sensor_snapshot_reader = None
@@ -117,6 +149,15 @@ def _percentile(values, p):
 
 def _history_records(window_s: int):
     cutoff = datetime.now().timestamp() - window_s
+    store = power_history_store
+    if store is not None:
+        try:
+            db_records = store.load_since(cutoff_ts=cutoff, limit=HISTORY_MAX_SAMPLES)
+            if db_records:
+                return db_records
+        except Exception as e:
+            bot.logger.warning("[power-history] sqlite read failed: %s", e)
+
     with power_history_lock:
         return [row for row in power_history if row.get("ts", 0) >= cutoff]
 
@@ -195,6 +236,13 @@ def _record_power_sample(ts: float, watts: float):
 
     with power_history_lock:
         power_history.append(sample)
+
+    store = power_history_store
+    if store is not None:
+        try:
+            store.insert_sample(sample)
+        except Exception as e:
+            bot.logger.warning("[power-history] sqlite write failed: %s", e)
 
 
 enable_power_monitor = os.getenv("ENABLE_POWER_MONITOR", "False").lower() in ("true", "1", "t")
@@ -392,7 +440,7 @@ async def power(ctx, view: str = "live", window: str = "5h", metric: str = "tota
                 f"Max: `{stats['max_w']:.2f} W`\n"
                 f"{temp_line}"
                 f"{extra_lines}"
-                f"Energy: `{stats['energy_Wh']:.3f} Wh` (`{stats['energy_kWh']:.6f} kWh`)\n"
+                f"Energy (session): `{stats['energy_Wh']:.3f} Wh` (`{stats['energy_kWh']:.6f} kWh`)\n"
                 f"Elapsed: `{stats['elapsed_s']:.1f} s`"
             )
 
@@ -535,6 +583,11 @@ async def on_guild_join(guild):
 async def shutdown(bot):
     if power_monitor is not None:
         power_monitor.stop_background()
+    if power_history_store is not None:
+        try:
+            power_history_store.close()
+        except Exception:
+            pass
     await bot.close()
 
 # Run the bot
