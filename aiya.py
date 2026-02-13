@@ -501,7 +501,7 @@ async def on_ready():
     bot.logger.info(f'Logged in as {bot.user.name} ({bot.user.id})')
     bot.logger.info(f"[startup-matplotlib] available={MATPLOTLIB_AVAILABLE} error={MATPLOTLIB_ERROR}")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name='drawing tutorials.'))
-    await bot.sync_commands(force=True)
+    await bot.sync_commands()
     if power_monitor is not None:
         power_monitor.start_background()
         bot.logger.info("PowerMonitor started in background mode")
