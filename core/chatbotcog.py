@@ -16,6 +16,8 @@ warnings.filterwarnings("ignore", category=UserWarning, message="Shard ID None h
 # Configure logging to capture information and errors
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+CORE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(CORE_DIR)
 
 class LlamaChatCog(commands.Cog):
     def __init__(self, bot):
@@ -27,6 +29,7 @@ class LlamaChatCog(commands.Cog):
         self.model = None
         self.tokenizer = None
         self.backend = os.getenv("LLAMA_BACKEND", "llama_cpp")
+        self.llama_chat_mode = True
         self.total_tokens_generated = 0  # Track total tokens generated in the current session
         self.highres_fix_value = None
         self.size_ratio_value = None
@@ -71,21 +74,47 @@ class LlamaChatCog(commands.Cog):
         try:
             if self.backend == "llama_cpp":
                 import llama_cpp
-                model_dir = os.path.join("core", "Llama-3.2-11B-Vision-Instruct-gguf")
-                model_path = os.path.join(model_dir, "Llama-3.2-11B-Vision-Instruct.Q4_K_M.gguf")
+                model_dir = os.path.join(PROJECT_ROOT, "core", "Meta-Llama-3.1-8B-Instruct-abliterated-gguf")
+                primary_model_path = os.path.join(model_dir, "meta-llama-3.1-8b-instruct-abliterated.Q4_K_M.gguf")
+                fallback_model_path = os.path.join(PROJECT_ROOT, "core", "WizzGPT6", "WizzGPTv6.Q8_0.gguf")
+
                 self.n_ctx = 8192
-                self.model = llama_cpp.Llama(model_path=model_path, n_ctx=self.n_ctx, n_gpu_layers=35)
-                print("llama_cpp backend loaded")
+                try:
+                    self.model = llama_cpp.Llama(
+                        model_path=primary_model_path,
+                        n_ctx=self.n_ctx,
+                        n_gpu_layers=35
+                    )
+                    self.llama_chat_mode = True
+                    print("llama_cpp backend loaded (Meta-Llama-3.1-8B-Instruct-abliterated)")
+                except Exception as primary_error:
+                    logger.warning(
+                        "No se pudo cargar el modelo principal en llama_cpp (%s). "
+                        "Intentando fallback a WizzGPTv6...",
+                        primary_error,
+                    )
+                    self.n_ctx = 4096
+                    self.model = llama_cpp.Llama(
+                        model_path=fallback_model_path,
+                        n_ctx=self.n_ctx,
+                        n_gpu_layers=0
+                    )
+                    self.llama_chat_mode = False
+                    print("llama_cpp backend loaded (fallback: WizzGPTv6)")
             elif self.backend == "transformers":
                 from transformers import AutoTokenizer, AutoModelForCausalLM
                 import torch
-                model_name = "meta-llama/Llama-3.2-11B-Vision-Instruct.Q4_K_M"
+                model_name = "meta-llama/Meta-Llama-3.1-8B-Instruct"
                 self.tokenizer = AutoTokenizer.from_pretrained(model_name)
                 self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
                 self.n_ctx = self.model.config.max_position_embeddings
                 print("transformers backend loaded")
         except Exception as e:
+            self.model = None
             logger.error(f"Error initializing the model: {str(e)}")
+            logger.warning(
+                "Chatbot deshabilitado. Sugerencia: actualiza llama-cpp-python o usa LLAMA_BACKEND=transformers."
+            )
 
     @commands.command(name='reset')
     async def reset_session(self, ctx: Context):
@@ -135,6 +164,9 @@ class LlamaChatCog(commands.Cog):
     @commands.command(name='generate')
     async def handle_generate_command(self, ctx: Context, *, content: str):
         """Handle the generation command from the user."""
+        if self.model is None:
+            await ctx.send("Chatbot model is unavailable right now. Check logs for model backend details.")
+            return
         
         # Si l'utilisateur mentionne "hires", on affecte la valeur à highres_fix_value et on supprime le terme
         if "hires" in content.lower():
@@ -188,6 +220,8 @@ class LlamaChatCog(commands.Cog):
         # Ignore messages from the bot itself or if the bot is not mentioned, or if there is no content
         if message.author == self.bot.user or self.bot.user not in message.mentions or not message.content:
             return
+        if self.model is None:
+            return
 
         print(f'-- Chat request from {message.author.display_name}')
 
@@ -228,36 +262,75 @@ class LlamaChatCog(commands.Cog):
 
         try:
             if self.backend == "llama_cpp":
-                stream = self.model.create_chat_completion(messages=self.history, stream=True, max_tokens=1024, temperature=0.7, top_p=0.4)
-                for chunk in stream:
-                    if self.stop_requested:
-                        break
-                    token = chunk["choices"][0].get("delta", {}).get("content", "")
-                    response += token
-                    tokens_this_response += 1
-                    if len(response) > 1975:
-                        if not initial_response_sent:
-                            temp_message = await message.channel.send(response)
-                            initial_response_sent = True
-                        else:
-                            await temp_message.edit(content=response)
-                            if tag:
-                                temp_message = await message.channel.send(f"{message.author.mention} ")
-                                response = f"<@{message.author.id}>\n"
+                if self.llama_chat_mode:
+                    stream = self.model.create_chat_completion(messages=self.history, stream=True, max_tokens=1024, temperature=0.7, top_p=0.4)
+                    for chunk in stream:
+                        if self.stop_requested:
+                            break
+                        token = chunk["choices"][0].get("delta", {}).get("content", "")
+                        response += token
+                        tokens_this_response += 1
+                        if len(response) > 1975:
+                            if not initial_response_sent:
+                                temp_message = await message.channel.send(response)
+                                initial_response_sent = True
                             else:
-                                temp_message = await message.channel.send("")
-                                response = ""
-                    elif not initial_response_sent and response:
-                        if tag:
-                            temp_message = await message.channel.send(f"{message.author.mention} {response}")
-                        else:
-                            temp_message = await message.channel.send(f"{response}")
-                        initial_response_sent = True
-                    elif response:
-                        current_time = asyncio.get_running_loop().time()
-                        if current_time - last_update_time >= 1.25:
-                            await temp_message.edit(content=response)
-                            last_update_time = current_time
+                                await temp_message.edit(content=response)
+                                if tag:
+                                    temp_message = await message.channel.send(f"{message.author.mention} ")
+                                    response = f"<@{message.author.id}>\n"
+                                else:
+                                    temp_message = await message.channel.send("")
+                                    response = ""
+                        elif not initial_response_sent and response:
+                            if tag:
+                                temp_message = await message.channel.send(f"{message.author.mention} {response}")
+                            else:
+                                temp_message = await message.channel.send(f"{response}")
+                            initial_response_sent = True
+                        elif response:
+                            current_time = asyncio.get_running_loop().time()
+                            if current_time - last_update_time >= 1.25:
+                                await temp_message.edit(content=response)
+                                last_update_time = current_time
+                else:
+                    completion_prompt = f"{content}\nAssistant:"
+                    stream = self.model.create_completion(
+                        prompt=completion_prompt,
+                        stream=True,
+                        max_tokens=512,
+                        temperature=0.7,
+                        top_p=0.4
+                    )
+                    for chunk in stream:
+                        if self.stop_requested:
+                            break
+                        token = chunk["choices"][0].get("text", "")
+                        response += token
+                        tokens_this_response += 1
+                        if len(response) > 1975:
+                            if not initial_response_sent:
+                                temp_message = await message.channel.send(response)
+                                initial_response_sent = True
+                            else:
+                                await temp_message.edit(content=response)
+                                if tag:
+                                    temp_message = await message.channel.send(f"{message.author.mention} ")
+                                    response = f"<@{message.author.id}>\n"
+                                else:
+                                    temp_message = await message.channel.send("")
+                                    response = ""
+                        elif not initial_response_sent and response:
+                            if tag:
+                                temp_message = await message.channel.send(f"{message.author.mention} {response}")
+                            else:
+                                temp_message = await message.channel.send(f"{response}")
+                            initial_response_sent = True
+                        elif response:
+                            current_time = asyncio.get_running_loop().time()
+                            if current_time - last_update_time >= 1.25:
+                                await temp_message.edit(content=response)
+                                last_update_time = current_time
             else:
                 from transformers import TextIteratorStreamer
                 import torch

@@ -10,6 +10,10 @@ from core import queuehandler
 from core import settings
 from core import stablecog
 from core import upscalecog
+from core.logging_setup import get_logger
+
+
+logger = get_logger(__name__)
 
 
 
@@ -133,7 +137,8 @@ class DrawModal(Modal):
             InputText(
                 label='Input your new prompt',
                 value=input_tuple[1],
-                style=discord.InputTextStyle.long
+                style=discord.InputTextStyle.long,
+                required=False
             )
         )
         self.add_item(
@@ -163,7 +168,7 @@ class DrawModal(Modal):
         # expose each available (supported) option, even if output didn't use them
         ex_params = f'data_model:{display_name}'
         for index, value in enumerate(tuple_names[index_start:], index_start):
-            if index == 10 or 12 <= index <= 13 or index == 15:
+            if index == 10 or 12 <= index <= 13 or index == 15 or index == 19:
                 continue
             ex_params += f'\n{value}:{input_tuple[index]}'
 
@@ -179,6 +184,9 @@ class DrawModal(Modal):
     async def callback(self, interaction: discord.Interaction):
         # update the tuple with new prompts
         pen = list(self.input_tuple)
+        # reset enhancements so Edit redraw starts from a neutral state unless user explicitly sets them
+        pen[15] = 'Disabled'
+        pen[19] = 'None'
         # dedup ensures that if user added lora/hypernet manually to edited prompt
         # it is not duplicated from previous "non-simple" prompt on replacement
         pen[2] = settings.extra_net_dedup(pen[2].replace(pen[1], self.children[0].value))
@@ -268,7 +276,6 @@ class DrawModal(Modal):
             if 'distilled_cfg_scale:' in line:
                 try:
                     pen[21] = float(line.split(':', 1)[1].replace(",", "."))
-                    print 
                 except Exception:
                     invalid_input = True
                     embed_err.add_field(
@@ -347,12 +354,17 @@ class DrawModal(Modal):
         else:
             # run through mod function if any moderation values are set in config
             new_clean_negative = ''
-            if settings.global_var.prompt_ban_list or settings.global_var.prompt_ignore_list or settings.global_var.negative_prompt_prefix:
+            if (settings.global_var.prompt_ban_list
+                    or settings.global_var.prompt_ignore_list
+                    or settings.global_var.negative_prompt_prefix
+                    or settings.global_var.prompt_prefix):
                 mod_results = settings.prompt_mod(self.children[0].value, self.children[1].value)
                 if settings.global_var.prompt_ban_list and mod_results[0] == "Stop":
                     await interaction.response.send_message(f"I'm not allowed to draw the word {mod_results[1]}!", ephemeral=True)
                     return
-                if settings.global_var.prompt_ignore_list or settings.global_var.negative_prompt_prefix and mod_results[0] == "Mod":
+                if (settings.global_var.prompt_ignore_list
+                        or settings.global_var.negative_prompt_prefix
+                        or settings.global_var.prompt_prefix) and mod_results[0] == "Mod":
                     if settings.global_var.display_ignored_words == "False":
                         pen[1] = mod_results[1]
                     pen[2] = mod_results[1]
@@ -393,7 +405,7 @@ class DrawModal(Modal):
                 elif str(pen[17]) != str(self.input_tuple[17]):
                     prompt_output += f'\nNew extra network: ``{pen[17]}``'
 
-            print(f'Redraw -- {interaction.user.name}#{interaction.user.discriminator} -- Prompt: {pen[1]}')
+            logger.info('Redraw -- %s#%s -- Prompt: %s', interaction.user.name, interaction.user.discriminator, pen[1])
 
             # check queue again, but now we know user is not in queue
             if queuehandler.GlobalQueue.dream_thread.is_alive():
@@ -417,10 +429,10 @@ class DrawView(View):
                 upscale_menu.callback = upscale_menu.callback
                 self.add_item(upscale_menu)
 
-    # the 🖋 button will allow a new prompt and keep same parameters for everything else
+    # the 🖊️ button will allow a new prompt and keep same parameters for everything else
     @discord.ui.button(
         custom_id="button_re-prompt",
-        emoji="🖋",
+        emoji="🖊️",
         label="Edit")
     async def button_draw(self, button, interaction):
         buttons_free = True
@@ -440,9 +452,9 @@ class DrawView(View):
                 else:
                     await interaction.response.send_modal(DrawModal(self.input_tuple))
             else:
-                await interaction.response.send_message("You can't use other people's 🖋!", ephemeral=True)
+                await interaction.response.send_message("You can't use other people's Edit button!", ephemeral=True)
         except Exception as e:
-            print('The pen button broke: ' + str(e))
+            logger.exception('The pen button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
             button.disabled = True
             await interaction.response.edit_message(view=self)
@@ -464,12 +476,22 @@ class DrawView(View):
                 # update the tuple with a new seed
                 new_seed = list(self.input_tuple)
                 new_seed[10] = random.randint(0, 0xFFFFFFFF)
+                # reset enhancements so reroll doesn't keep Highres/ADetailer
+                new_seed[15] = 'Disabled'
+                new_seed[19] = 'None'
                 # set batch to 1
                 if settings.global_var.batch_buttons == "False":
                     new_seed[13] = [1, 1]
                 seed_tuple = tuple(new_seed)
 
-                print(f'Reroll -- {interaction.user.name}#{interaction.user.discriminator} -- Prompt: {seed_tuple[1]}')
+                logger.info(
+                    'Reroll reset enhancements -- %s#%s -- highres_fix=%s adetailer=%s',
+                    interaction.user.name,
+                    interaction.user.discriminator,
+                    seed_tuple[15],
+                    seed_tuple[19],
+                )
+                logger.info('Reroll -- %s#%s -- Prompt: %s', interaction.user.name, interaction.user.discriminator, seed_tuple[1])
 
                 # set up the draw dream and do queue code again for lack of a more elegant solution
                 draw_dream = stablecog.StableCog(self)
@@ -488,15 +510,15 @@ class DrawView(View):
                         f'``{len(queuehandler.GlobalQueue.queue)}`` - ``{seed_tuple[1]}``'
                         f'\nNew Seed:``{seed_tuple[10]}``')
             else:
-                await interaction.response.send_message("You can't use other people's 🎲!", ephemeral=True)
+                await interaction.response.send_message("You can't use other people's Re-roll button!", ephemeral=True)
         except Exception as e:
-            print('The dice roll button broke: ' + str(e))
+            logger.exception('The dice roll button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
             button.disabled = True
             await interaction.response.edit_message(view=self)
             await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
 
-    # the ⬆️ button will upscale the selected image
+    # the ?? button will upscale the selected image
     @discord.ui.button(
     custom_id="button_upscale",
     emoji="⬆️",
@@ -521,7 +543,7 @@ class DrawView(View):
                     upscaler_1 = settings.read(channel)['upscaler_1']
                     upscale_tuple = (ctx, '2.0', init_image, upscaler_1, "None", '0.5', '0.0', '0.0', False) # Create defaults for upscale. If desired we can add options to the per channel upscale settings for this.
 
-                    print(f'Upscaling -- {interaction.user.name}#{interaction.user.discriminator}')
+                    logger.info('Upscaling -- %s#%s', interaction.user.name, interaction.user.discriminator)
 
                     # set up the draw dream and do queue code again for lack of a more elegant solution
                     draw_dream = upscalecog.UpscaleCog(self)
@@ -539,77 +561,156 @@ class DrawView(View):
                             f'<@{interaction.user.id}>, {settings.messages()}\nQueue: '
                             f'``{len(queuehandler.GlobalQueue.queue)}`` - Upscaling')
             else:
-                await interaction.response.send_message("You can't use other people's ⬆️!", ephemeral=True)
+                await interaction.response.send_message("You can't use other people's Upscale button!", ephemeral=True)
         except Exception as e:
-            print('The upscale button broke: ' + str(e))
+            logger.exception('The upscale button broke: %s', e)
             # if interaction fails, assume it's because aiya restarted (breaks buttons)
             button.disabled = True
             await interaction.response.edit_message(view=self)
             await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
 
-    '''
-    @discord.ui.button(
-        custom_id="button_apply_details",
-        emoji="✨",
-        label="Apply Details++")
-    async def button_apply_details(self, button, interaction):
-        buttons_free = True
-        try:
-            # Vérification si l'action est réalisée par l'utilisateur qui a demandé l'image
-            #if settings.global_var.restrict_buttons == 'True':
-            #    if interaction.user.id != self.input_tuple[0].author.id:
-            #        buttons_free = False
-            
-            # Only Wizz can use this button
-            if interaction.user.id != 457981967712124948:
+    async def _enqueue_draw_variant(self, interaction, updated_tuple, action_label, action_output):
+        draw_dream = stablecog.StableCog(self)
+        user_queue_limit = settings.queue_check(interaction.user)
+        if queuehandler.GlobalQueue.dream_thread.is_alive():
+            if user_queue_limit == "Stop":
                 await interaction.response.send_message(
-                    "Only Wizz can use this button.",
-                    ephemeral=True
+                    content=f"Please wait! You're past your queue limit of {settings.global_var.queue_limit}.",
+                    ephemeral=True,
                 )
                 return
-            
-            if buttons_free:
-                # Mise à jour du tuple pour conserver la même seed et modifier ADetailer et Highres_fix
-                new_input = list(self.input_tuple)
-                new_input[19] = 'Details++'
-                new_input[15] = '4x_foolhardy_Remacri'
-                input_tuple = tuple(new_input)
+            queuehandler.GlobalQueue.queue.append(
+                queuehandler.DrawObject(stablecog.StableCog(self), *updated_tuple, DrawView(updated_tuple))
+            )
+        else:
+            await queuehandler.process_dream(
+                draw_dream,
+                queuehandler.DrawObject(stablecog.StableCog(self), *updated_tuple, DrawView(updated_tuple)),
+            )
 
-                print(f'Apply Details++ -- {interaction.user.name}#{interaction.user.discriminator} -- Prompt: {input_tuple[1]}')
+        if user_queue_limit != "Stop":
+            await interaction.response.send_message(
+                f'<@{interaction.user.id}>, {settings.messages()}\nQueue: '
+                f'``{len(queuehandler.GlobalQueue.queue)}`` - ``{updated_tuple[1]}``'
+                f'\n{action_label}: ``{action_output}``'
+                f'\nSame Seed: ``{updated_tuple[10]}``'
+            )
 
-                # Configuration et ajout de la tâche dans la file d'attente
-                draw_dream = stablecog.StableCog(self)
-                user_queue_limit = settings.queue_check(interaction.user)
-                if queuehandler.GlobalQueue.dream_thread.is_alive():
-                    if user_queue_limit == "Stop":
-                        await interaction.response.send_message(content=f"Please wait! You're past your queue limit of {settings.global_var.queue_limit}.", ephemeral=True)
-                    else:
-                        queuehandler.GlobalQueue.queue.append(queuehandler.DrawObject(stablecog.StableCog(self), *input_tuple, DrawView(input_tuple)))
-                else:
-                    await queuehandler.process_dream(draw_dream, queuehandler.DrawObject(stablecog.StableCog(self), *input_tuple, DrawView(input_tuple)))
+    def _get_channel_upscaler(self):
+        channel = '% s' % self.input_tuple[0].channel.id
+        settings.check(channel)
+        return settings.read(channel)['upscaler_1']
 
-                if user_queue_limit != "Stop":
-                    await interaction.response.send_message(
-                        f'<@{interaction.user.id}>, {settings.messages()}\nQueue: '
-                        f'``{len(queuehandler.GlobalQueue.queue)}`` - ``{input_tuple[1]}``'
-                        f'\nSame Seed:``{input_tuple[10]}``')
-            else:
-                await interaction.response.send_message("You can't use this button for others' images!", ephemeral=True)
+    @discord.ui.button(
+        custom_id="button_highres_fix",
+        emoji="🧩",
+        label="Highres Fix",
+        row=1)
+    async def button_highres_fix(self, button, interaction):
+        buttons_free = True
+        try:
+            if settings.global_var.restrict_buttons == 'True':
+                if interaction.user.id != self.input_tuple[0].author.id:
+                    buttons_free = False
+            if not buttons_free:
+                await interaction.response.send_message("You can't use other people's Highres Fix!", ephemeral=True)
+                return
+
+            highres_model = self._get_channel_upscaler()
+            new_input = list(self.input_tuple)
+            new_input[15] = highres_model
+            input_tuple = tuple(new_input)
+            logger.info(
+                'Highres Fix -- %s#%s -- Prompt: %s -- upscaler=%s -- seed=%s',
+                interaction.user.name,
+                interaction.user.discriminator,
+                input_tuple[1],
+                highres_model,
+                input_tuple[10],
+            )
+            await self._enqueue_draw_variant(interaction, input_tuple, "Highres Fix", highres_model)
         except Exception as e:
-            print(f'The Apply Details++ button broke: {str(e)}')
-            # En cas d'échec de l'interaction, désactiver le bouton
+            logger.exception('The Highres Fix button broke: %s', e)
             button.disabled = True
             await interaction.response.edit_message(view=self)
             await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
-    '''
 
-    # the 📋 button will let you review the parameters of the generation
+    @discord.ui.button(
+        custom_id="button_apply_details",
+        emoji="✨",
+        label="Details++",
+        row=1)
+    async def button_apply_details(self, button, interaction):
+        buttons_free = True
+        try:
+            if settings.global_var.restrict_buttons == 'True':
+                if interaction.user.id != self.input_tuple[0].author.id:
+                    buttons_free = False
+            if not buttons_free:
+                await interaction.response.send_message("You can't use this button for others' images!", ephemeral=True)
+                return
+
+            new_input = list(self.input_tuple)
+            new_input[19] = 'Details++'
+            if not new_input[15] or new_input[15] == 'Disabled':
+                new_input[15] = self._get_channel_upscaler()
+            input_tuple = tuple(new_input)
+            logger.info(
+                'Details++ -- %s#%s -- Prompt: %s -- upscaler=%s -- seed=%s',
+                interaction.user.name,
+                interaction.user.discriminator,
+                input_tuple[1],
+                input_tuple[15],
+                input_tuple[10],
+            )
+            await self._enqueue_draw_variant(interaction, input_tuple, "ADetailer", "Details++")
+        except Exception as e:
+            logger.exception('The Apply Details++ button broke: %s', e)
+            button.disabled = True
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
+
+    @discord.ui.button(
+        custom_id="button_faces_hands",
+        emoji="🤗",
+        label="Faces+Hands",
+        row=1)
+    async def button_faces_hands(self, button, interaction):
+        buttons_free = True
+        try:
+            if settings.global_var.restrict_buttons == 'True':
+                if interaction.user.id != self.input_tuple[0].author.id:
+                    buttons_free = False
+            if not buttons_free:
+                await interaction.response.send_message("You can't use this button for others' images!", ephemeral=True)
+                return
+
+            new_input = list(self.input_tuple)
+            new_input[19] = 'Faces+Hands'
+            new_input[15] = 'Disabled'
+            input_tuple = tuple(new_input)
+            logger.info(
+                'Faces+Hands -- %s#%s -- Prompt: %s -- highres_fix=%s -- seed=%s',
+                interaction.user.name,
+                interaction.user.discriminator,
+                input_tuple[1],
+                input_tuple[15],
+                input_tuple[10],
+            )
+            await self._enqueue_draw_variant(interaction, input_tuple, "ADetailer", "Faces+Hands (no Highres Fix)")
+        except Exception as e:
+            logger.exception('The Faces+Hands button broke: %s', e)
+            button.disabled = True
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
+
+    # the ?? button will let you review the parameters of the generation
     @discord.ui.button(
         custom_id="button_review",
         emoji="📋",
         label="Review")
     async def button_review(self, button, interaction):
-        print("[DEBUG] Button review clicked.")
+        logger.debug("Button review clicked.")
 
         init_url = None
         try:
@@ -633,10 +734,16 @@ class DrawView(View):
                 # Use the interaction's channel ID as fallback
                 ctx = FakeCtx(interaction.channel_id)
             
-            embed = await ctxmenuhandler.parse_image_info(ctx, attachment.url, "button")
+            logger.info(
+                "button_review parse request: user_id=%s attachment_url=%s has_init_url=%s",
+                interaction.user.id,
+                attachment.url,
+                bool(init_url),
+            )
+            embed = await ctxmenuhandler.parse_image_info(ctx, attachment.url, "button", init_url=init_url)
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
-            print(f"[ERROR] The clipboard button broke: {str(e)}.")
+            logger.exception("The clipboard button broke: %s", e)
 
             button.disabled = True
             await interaction.response.edit_message(view=self)
@@ -656,7 +763,7 @@ class DrawView(View):
             button.disabled = True
             await interaction.response.edit_message(view=self)
             await interaction.followup.send("I may have been restarted. This button no longer works.\n"
-                                            "You can react with ❌ to delete the image.", ephemeral=True)
+                                            "You can react with ? to delete the image.", ephemeral=True)
 
 class DeleteView(View):
     def __init__(self, input_tuple):
@@ -713,7 +820,7 @@ class DownloadMenu(discord.ui.Select):
                 await interaction.response.send_message("You can't download other people's images!", ephemeral=True)
 
         except Exception as e:
-            print('The download menu broke: ' + str(e))
+            logger.exception('The download menu broke: %s', e)
             self.disabled = True
             await interaction.response.edit_message(view=self.view)
             await interaction.followup.send("I may have been restarted. This button no longer works.\n", ephemeral=True)
@@ -743,7 +850,7 @@ class UpscaleMenu(discord.ui.Select):
                 upscaler_1 = settings.read(channel)['upscaler_1']
                 upscale_tuple = (ctx, '2.0', init_image, upscaler_1, "None", '0.5', '0.0', '0.0', False) # Create defaults for upscale. If desired we can add options to the per channel upscale settings for this.
 
-                print(f'Upscaling request -- {interaction.user.name}#{interaction.user.discriminator} for {partial_path}')
+                logger.info('Upscaling request -- %s#%s for %s', interaction.user.name, interaction.user.discriminator, partial_path)
 
                 # set up the draw dream and do queue code again for lack of a more elegant solution
                 draw_dream = upscalecog.UpscaleCog(self)
@@ -764,7 +871,8 @@ class UpscaleMenu(discord.ui.Select):
                 await interaction.response.send_message("You can't upscale other people's images!", ephemeral=True)
         
         except Exception as e:
-            print('The upscale menu broke: ' + str(e))
+            logger.exception('The upscale menu broke: %s', e)
             self.disabled = True
             await interaction.response.edit_message(view=self.view)
             await interaction.followup.send("I may have been restarted. This button no longer works.\n", ephemeral=True)
+

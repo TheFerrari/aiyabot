@@ -8,6 +8,10 @@ from core import settings
 from core import queuehandler
 from core import upscalecog
 from core import viewhandler
+from core.logging_setup import get_logger
+
+
+logger = get_logger(__name__)
 
 
 def extra_net_search(field):
@@ -40,9 +44,16 @@ def style_remove(search, field):
     return field.strip(',')
 
 
-async def parse_image_info(ctx, image_url, command):
+async def parse_image_info(ctx, image_url, command, init_url=None):
     message = ''
     try:
+        logger.info(
+            "parse_image_info start: command=%s image_url=%s has_init_url=%s channel_id=%s",
+            command,
+            image_url,
+            bool(init_url),
+            getattr(getattr(ctx, "channel", None), "id", None),
+        )
         # construct a payload
         image = base64.b64encode(requests.get(image_url, stream=True).content).decode('utf-8')
         payload = {
@@ -69,9 +80,9 @@ async def parse_image_info(ctx, image_url, command):
         # initialize extra params
         steps, size, guidance_scale, sampler, scheduler, seed = '', '', '', '', '', ''
         style, adetailer, highres_fix, clip_skip = '', None, '', ''
-        strength, distilled_cfg_scale, has_init_url = '', '', False # poseref, ipadapter
-        if command == 'button' and ctx is not None:
-            has_init_url = True
+        strength, distilled_cfg_scale = '', '' # poseref, ipadapter
+        has_init_url = bool(init_url)
+        hide_thumbnail = command == 'button'
 
         distilled_cfg_scale = settings.read(str(ctx.channel.id)).get('distilled_cfg_scale', '3.5')
 
@@ -127,6 +138,16 @@ async def parse_image_info(ctx, image_url, command):
                 strength = line.split(': ', 1)[1]
 
         width_height = size.split("x")
+        logger.info(
+            "parse_image_info parsed params: steps=%s size=%s guidance_scale=%s sampler=%s scheduler=%s seed=%s strength=%s",
+            steps,
+            size,
+            guidance_scale,
+            sampler,
+            scheduler,
+            seed,
+            strength if strength else "<empty>",
+        )
 
         # try to find the model name and activator token
         for model in settings.global_var.model_info.items():
@@ -146,7 +167,7 @@ async def parse_image_info(ctx, image_url, command):
 
         # create embed and give the best effort in trying to parse the png info
         embed = discord.Embed(title="About the image!", description="")
-        if not has_init_url:  # for some reason this bugs out the embed
+        if not hide_thumbnail:  # for some reason this bugs out the embed in button flow
             embed.set_thumbnail(url=image_url)
         if len(prompt_field) > 1024:
             prompt_field = f'{prompt_field[:1010]}....'
@@ -173,12 +194,12 @@ async def parse_image_info(ctx, image_url, command):
         if style:
             copy_command += f' styles:{style[0]}'
             extra_params += f'\nStyle preset: ``{style[0]}``'
-        if adetailer:
-            copy_command += f' adetailer:{adetailer}'
-            extra_params += f'\nADetailer: ``{adetailer}``'
-        if highres_fix:
-            copy_command += f' highres_fix:{highres_fix}'
-            extra_params += f'\nHigh-res fix: ``{highres_fix}``'
+        #if adetailer:
+        #    copy_command += f' adetailer:{adetailer}'
+        #    extra_params += f'\nADetailer: ``{adetailer}``'
+        #if highres_fix:
+        #    copy_command += f' highres_fix:{highres_fix}'
+        #    extra_params += f'\nHigh-res fix: ``{highres_fix}``'
         if clip_skip:
             copy_command += f' clip_skip:{clip_skip}'
             extra_params += f'\nCLIP skip: ``{clip_skip}``'
@@ -198,7 +219,9 @@ async def parse_image_info(ctx, image_url, command):
 
         if has_init_url:
             # not interested in adding embed fields for strength and init_image
-            copy_command += f' strength:{strength} init_url:{str(ctx)}'
+            if strength:
+                copy_command += f' strength:{strength}'
+            copy_command += f' init_url:{init_url}'
         #if poseref:
         #    copy_command += f' poseref:{poseref}'
         #    extra_params += f'\nPose Reference URL: ``{poseref}``'
@@ -208,13 +231,21 @@ async def parse_image_info(ctx, image_url, command):
 
         embed.add_field(name=f'Command for copying', value=f'', inline=False)
         embed.set_footer(text=copy_command)
+        logger.info(
+            "parse_image_info copy command generated: command=%s length=%s preview=%s",
+            command,
+            len(copy_command),
+            copy_command[:350],
+        )
 
         if command == 'button':
+            logger.info("parse_image_info completed for button command")
             return embed
 
         await ctx.respond(embed=embed, ephemeral=True)
+        logger.info("parse_image_info completed: command=%s", command)
     except Exception as e:
-        print(f"Erreur dans parse_image_info: {e}")
+        logger.exception("parse_image_info failed: command=%s image_url=%s err=%s", command, image_url, e)
         if command == 'slash':
             message = "\nIf you're copying from Discord and think there should be image info," \
                       " try **Copy Link** instead of **Copy Image**"
@@ -231,9 +262,11 @@ async def get_image_info(ctx, message: discord.Message):
     urls = extractor.find_urls(all_content)
 
     if not urls:
+        logger.warning("get_image_info: no URLs found in message id=%s", message.id)
         await ctx.respond(content="No images were found in the message...", ephemeral=True)
         return
 
+    logger.info("get_image_info: found %s URL(s) in message id=%s", len(urls), message.id)
     for image_url in urls:
         await parse_image_info(ctx, image_url, "context")
 
@@ -248,6 +281,7 @@ async def quick_upscale(self, ctx, message: discord.Message):
     urls = extractor.find_urls(all_content)
 
     if not urls:
+        logger.warning("quick_upscale: no URLs found in message id=%s", message.id)
         await ctx.respond(content="No images were found in the message...", ephemeral=True)
         return
 
@@ -272,6 +306,13 @@ async def quick_upscale(self, ctx, message: discord.Message):
     view = viewhandler.DeleteView(input_tuple)
     user_queue_limit = settings.queue_check(ctx.author)
     upscale_dream = upscalecog.UpscaleCog(self)
+    logger.info(
+        "quick_upscale request: user_id=%s image_url=%s resize=%s upscaler_1=%s",
+        ctx.author.id,
+        urls[0],
+        resize,
+        upscaler_1,
+    )
     if queuehandler.GlobalQueue.dream_thread.is_alive():
         if user_queue_limit == "Stop":
             await ctx.send_response(
@@ -294,8 +335,15 @@ async def batch_download(ctx, message: discord.Message):
     batch_id_pattern = r"Batch ID: \d+-\d+"
     image_ids_pattern = r"Image IDs: \d+-\d+"
     
-    batch_id = re.search(batch_id_pattern, all_content).group(0).split(": ")[1]
-    image_id = re.search(image_ids_pattern, all_content).group(0).split(": ")[1]
+    batch_id_match = re.search(batch_id_pattern, all_content)
+    image_id_match = re.search(image_ids_pattern, all_content)
+    if not batch_id_match or not image_id_match:
+        logger.warning("batch_download: missing batch metadata in message id=%s", message.id)
+        await ctx.respond(content="No batches were found", ephemeral=True)
+        return
+
+    batch_id = batch_id_match.group(0).split(": ")[1]
+    image_id = image_id_match.group(0).split(": ")[1]
     
     if not batch_id and not image_id:
         await ctx.respond(content="No batches were found", ephemeral=True)
@@ -322,6 +370,13 @@ async def batch_download(ctx, message: discord.Message):
     # Set up tuple of parameters to pass into the Discord view
     input_tuple = (ctx, batch_id, image_id)
     view = viewhandler.DeleteView(input_tuple)
+    logger.info(
+        "batch_download request: user_id=%s batch_id=%s image_ids=%s found_files=%s",
+        ctx.author.id,
+        batch_id,
+        image_id,
+        len(files),
+    )
 
     # Send the files as attachments
     if files:

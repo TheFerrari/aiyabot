@@ -1,6 +1,5 @@
 import base64
 import discord
-import traceback
 import requests
 from asyncio import AbstractEventLoop
 from discord import option
@@ -12,6 +11,7 @@ from core import ctxmenuhandler
 from core import queuehandler
 from core import viewhandler
 from core import settings
+from core.logging_setup import get_logger
 from core.queuehandler import GlobalQueue
 from core.leaderboardcog import LeaderboardCog
 
@@ -19,6 +19,7 @@ from core.leaderboardcog import LeaderboardCog
 class IdentifyCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.logger = get_logger(__name__)
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -46,24 +47,26 @@ class IdentifyCog(commands.Cog):
     )
     async def dream_handler(self, ctx: discord.ApplicationContext, *,
                             init_image: Optional[discord.Attachment] = None,
-                            init_url: Optional[str],
+                            init_url: Optional[str] = None,
                             phrasing: Optional[str] = 'Normal'):
-        print(f"/Identify request -- {ctx.author.name}#{ctx.author.discriminator} -- Image: {init_image if init_image else 'None'}, URL: {init_url if init_url else 'None'}")
+        image_url = init_url or (init_image.url if init_image else None)
+        self.logger.info(
+            "/Identify request -- %s#%s -- Image: %s, URL: %s, Phrasing: %s",
+            ctx.author.name,
+            ctx.author.discriminator,
+            'provided' if init_image else 'None',
+            init_url if init_url else 'None',
+            phrasing,
+        )
 
-        has_image = True
-        # url *will* override init image for compatibility, can be changed here
-        if init_url:
-            try:
-                init_image = requests.get(init_url)
-            except(Exception,):
-                await ctx.send_response('URL image not found!\nI have nothing to work with...', ephemeral=True)
-                has_image = False
-
-        # fail if no image is provided
-        if init_url is None:
-            if init_image is None:
-                await ctx.send_response('I need an image to identify!', ephemeral=True)
-                has_image = False
+        if not image_url:
+            await ctx.send_response('I need an image to identify!', ephemeral=True)
+            self.logger.warning(
+                "Identify rejected (no image): user=%s#%s",
+                ctx.author.name,
+                ctx.author.discriminator,
+            )
+            return
 
         # Update layman-friendly "phrasing" choices into what API understands
         if phrasing == 'Normal':
@@ -71,24 +74,30 @@ class IdentifyCog(commands.Cog):
         elif phrasing == 'Tags':
             phrasing = 'deepdanbooru'
         else:
-            await ctxmenuhandler.parse_image_info(ctx, init_image.url, "slash")
+            await ctxmenuhandler.parse_image_info(ctx, image_url, "slash")
             return
 
         # set up tuple of parameters to pass into the Discord view
-        input_tuple = (ctx, init_image.url, phrasing)
+        input_tuple = (ctx, image_url, phrasing)
         view = viewhandler.DeleteView(input_tuple)
         # set up the queue if an image was found
         user_queue_limit = settings.queue_check(ctx.author)
-        if has_image:
-            if queuehandler.GlobalQueue.dream_thread.is_alive():
-                if user_queue_limit == "Stop":
-                    await ctx.send_response(content=f"Please wait! You're past your queue limit of {settings.global_var.queue_limit}.", ephemeral=True)
-                else:
-                    queuehandler.GlobalQueue.queue.append(queuehandler.IdentifyObject(self, *input_tuple, view))
+        if queuehandler.GlobalQueue.dream_thread.is_alive():
+            if user_queue_limit == "Stop":
+                await ctx.send_response(content=f"Please wait! You're past your queue limit of {settings.global_var.queue_limit}.", ephemeral=True)
             else:
-                await queuehandler.process_dream(self, queuehandler.IdentifyObject(self, *input_tuple, view))
-            if user_queue_limit != "Stop":
-                await ctx.send_response(f"<@{ctx.author.id}>, I'm identifying the image!\nQueue: ``{len(queuehandler.GlobalQueue.queue)}``", delete_after=45.0)
+                queuehandler.GlobalQueue.queue.append(queuehandler.IdentifyObject(self, *input_tuple, view))
+                self.logger.info(
+                    "Identify enqueued: user_id=%s queue_size=%s",
+                    ctx.author.id,
+                    len(queuehandler.GlobalQueue.queue),
+                )
+        else:
+            await queuehandler.process_dream(self, queuehandler.IdentifyObject(self, *input_tuple, view))
+            self.logger.info("Identify started immediately: user_id=%s", ctx.author.id)
+
+        if user_queue_limit != "Stop":
+            await ctx.send_response(f"<@{ctx.author.id}>, I'm identifying the image!\nQueue: ``{len(queuehandler.GlobalQueue.queue)}``", delete_after=45.0)
 
     # the function to queue Discord posts
     def post(self, event_loop: AbstractEventLoop, post_queue_object: queuehandler.PostObject):
@@ -100,9 +109,10 @@ class IdentifyCog(commands.Cog):
             )
         )
         if queuehandler.GlobalQueue.post_queue:
-            self.post(self.event_loop, self.queue.pop(0))
+            self.post(event_loop, queuehandler.GlobalQueue.post_queue.pop(0))
 
     def dream(self, event_loop: AbstractEventLoop, queue_object: queuehandler.IdentifyObject):
+        should_update_leaderboard = False
         try:
             # construct a payload
             # Robust fetch of the image (Discord CDN/ephemeral links may require UA and can expire)
@@ -116,7 +126,7 @@ class IdentifyCog(commands.Cog):
                     }
                 )
             except Exception as fetch_err:
-                print(f"[identify] Image fetch failed: url={queue_object.init_image} err={fetch_err}")
+                self.logger.warning("Identify image fetch failed: url=%s err=%s", queue_object.init_image, fetch_err)
                 embed = discord.Embed(
                     title='identify failed',
                     description=f'Failed to download the image: {fetch_err}',
@@ -126,7 +136,11 @@ class IdentifyCog(commands.Cog):
                 return
 
             if img_resp.status_code != 200:
-                print(f"[identify] Image fetch bad status: {img_resp.status_code} url={queue_object.init_image}")
+                self.logger.warning(
+                    "Identify image fetch bad status: status=%s url=%s",
+                    img_resp.status_code,
+                    queue_object.init_image,
+                )
                 embed = discord.Embed(
                     title='identify failed',
                     description=f'Failed to download the image (HTTP {img_resp.status_code}). The URL may have expired. Please resend the image.',
@@ -137,7 +151,12 @@ class IdentifyCog(commands.Cog):
 
             content_type = img_resp.headers.get('Content-Type', '')
             content_len = int(img_resp.headers.get('Content-Length') or 0)
-            print(f"[identify] Image fetched: status={img_resp.status_code} content_type={content_type} bytes={content_len or 'unknown'}")
+            self.logger.info(
+                "Identify image fetched: status=%s content_type=%s bytes=%s",
+                img_resp.status_code,
+                content_type,
+                content_len or 'unknown',
+            )
             if 'image' not in content_type:
                 embed = discord.Embed(
                     title='identify failed',
@@ -157,12 +176,12 @@ class IdentifyCog(commands.Cog):
             s = settings.authenticate_user()
 
             response = s.post(url=f'{settings.global_var.url}/sdapi/v1/interrogate', json=payload)
-            print(f"[identify] API response: status={response.status_code}")
+            self.logger.info("Identify API response: status=%s", response.status_code)
             try:
                 response_data = response.json()
             except Exception:
                 body_preview = (response.text[:300] + '...') if response and response.text else 'empty'
-                print(f"[identify] Failed to parse JSON. Body preview: {body_preview}")
+                self.logger.warning("Identify API returned non-JSON response. Preview=%s", body_preview)
                 response_data = {"error": f"Invalid API response (HTTP {response.status_code})"}
 
             # post to discord
@@ -176,7 +195,7 @@ class IdentifyCog(commands.Cog):
                 if not caption:
                     # Friendly message when there is no description
                     keys = ','.join(list(response_data.keys())) if isinstance(response_data, dict) else 'n/a'
-                    print(f"[identify] No caption returned. Response keys: {keys}")
+                    self.logger.warning("Identify API returned no caption. keys=%s", keys)
                     fail_msg = response_data.get('error') or 'The API did not return any description or tags.'
                     embed = discord.Embed(title='identify', description=fail_msg)
                     embed.set_image(url=queue_object.init_image)
@@ -205,17 +224,21 @@ class IdentifyCog(commands.Cog):
                     self, queuehandler.PostObject(
                         self, queue_object.ctx, content=f'<@{queue_object.ctx.author.id}>', file='', embed=embed, view=queue_object.view))
             Thread(target=post_dream, daemon=True).start()
+            should_update_leaderboard = True
 
         except Exception as e:
-            embed = discord.Embed(title='identify failed', description=f'{e}\n{traceback.print_exc()}',
-                                  color=settings.global_var.embed_color)
+            self.logger.exception("Unhandled exception while processing identify command")
+            embed = discord.Embed(
+                title='identify failed',
+                description=f'Unexpected error while identifying the image: {e}',
+                color=settings.global_var.embed_color,
+            )
             event_loop.create_task(queue_object.ctx.channel.send(embed=embed))
-
-        # update the leaderboard
-        LeaderboardCog.update_leaderboard(queue_object.ctx.author.id, str(queue_object.ctx.author), "Identify_Count")
-
-        # check each queue for any remaining tasks
-        GlobalQueue.process_queue()
+        finally:
+            if should_update_leaderboard:
+                LeaderboardCog.update_leaderboard(queue_object.ctx.author.id, str(queue_object.ctx.author), "Identify_Count")
+            # Always continue with pending jobs, even when identify fails early.
+            GlobalQueue.process_queue()
 
 
 def setup(bot):

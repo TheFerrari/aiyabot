@@ -4,6 +4,7 @@ from discord.ext import commands
 from typing import Optional
 
 from core import settings
+from core import autocomplete as ac
 
 
 class SettingsCog(commands.Cog):
@@ -123,7 +124,7 @@ class SettingsCog(commands.Cog):
         str,
         description='Set default data model for image generation',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(model_autocomplete),
+        autocomplete=ac.model_autocomplete,
     )
     @option(
         'steps',
@@ -144,7 +145,7 @@ class SettingsCog(commands.Cog):
         int,
         description='Set default width for the channel',
         required=False,
-        autocomplete=size_auto,
+        autocomplete=ac.size_autocomplete,
         choices=settings.global_var.size_range
     )
     @option(
@@ -152,7 +153,7 @@ class SettingsCog(commands.Cog):
         int,
         description='Set default height for the channel',
         required=False,
-        autocomplete=size_auto,
+        autocomplete=ac.size_autocomplete,
         choices=settings.global_var.size_range
     )
     @option(
@@ -166,7 +167,7 @@ class SettingsCog(commands.Cog):
         str,
         description='Set default sampler for the channel',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(sampler_autocomplete),
+        autocomplete=ac.sampler_autocomplete,
     )
 
     @option(
@@ -174,35 +175,35 @@ class SettingsCog(commands.Cog):
         str,
         description='Set default scheduler for the channel',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(scheduler_autocomplete),
+        autocomplete=ac.scheduler_autocomplete,
     )
     @option(
         'styles',
         str,
         description='Apply a predefined style to the generation.',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(style_autocomplete),
+        autocomplete=ac.style_autocomplete,
     )
     @option(
         'hypernet',
         str,
         description='Set default hypernetwork model for the channel',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(hyper_autocomplete),
+        autocomplete=ac.extra_net_autocomplete,
     )
     @option(
         'lora',
         str,
         description='Set default LoRA for the channel',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(lora_autocomplete),
+        autocomplete=ac.lora_autocomplete,
     )
     @option(
         'highres_fix',
         str,
         description='Set default highres fix model for the channel',
         required=False,
-        autocomplete=discord.utils.basic_autocomplete(hires_autocomplete),
+        autocomplete=ac.hires_autocomplete,
     )
     @option(
         'clip_skip',
@@ -233,7 +234,7 @@ class SettingsCog(commands.Cog):
         str,
         description='Set default upscaler model for the channel.',
         required=True,
-        autocomplete=discord.utils.basic_autocomplete(upscaler_autocomplete),
+        autocomplete=ac.upscaler_autocomplete,
     )
     @option(
         'refresh',
