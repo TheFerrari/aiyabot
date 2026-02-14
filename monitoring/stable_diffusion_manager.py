@@ -104,6 +104,8 @@ class StableDiffusionProcessManager:
                 creationflags = 0
                 if os.name == "nt":
                     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    if self._env_truthy(self._clean_env("SD_START_SEPARATE_CONSOLE")):
+                        creationflags |= getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
                 proc = subprocess.Popen(
                     launch_spec.command,
@@ -365,14 +367,15 @@ class StableDiffusionProcessManager:
         return pid
 
     def _is_api_online(self, timeout: int = 3) -> bool:
-        url = f"{self._webui_url()}/sdapi/v1/cmd-flags"
-        try:
-            response = requests.get(url, timeout=timeout)
-            if response.status_code in (200, 401, 404):
+        base = self._webui_url().rstrip("/")
+        for endpoint in ("/sdapi/v1/cmd-flags", "/sdapi/v1/sd-models"):
+            try:
+                response = requests.get(f"{base}{endpoint}", timeout=timeout)
+            except Exception:
+                continue
+            if response.status_code in (200, 401):
                 return True
-            return response.status_code < 500
-        except Exception:
-            return False
+        return False
 
     def _webui_url(self) -> str:
         try:
@@ -437,3 +440,9 @@ class StableDiffusionProcessManager:
             return None
         cleaned = value.strip().strip('"').strip("'")
         return cleaned or None
+
+    @staticmethod
+    def _env_truthy(value: Optional[str]) -> bool:
+        if not value:
+            return False
+        return value.strip().lower() in ("true", "1", "t", "yes", "y", "on")

@@ -415,6 +415,35 @@ def get_env_var_with_default(var: str, default: str) -> str:
     return ret if ret is not None else default
 
 
+def _probe_sd_api(base_url: str, timeout: int = 10) -> tuple[bool, bool, str]:
+    """
+    Probe Stable Diffusion API readiness using multiple endpoints.
+
+    Returns:
+    - ready: True if API is reachable and usable.
+    - auth_required: True if endpoint replied 401.
+    - endpoint: endpoint that confirmed readiness, empty string otherwise.
+    """
+    base = (base_url or "").rstrip("/")
+    endpoints = (
+        "/sdapi/v1/cmd-flags",
+        "/sdapi/v1/sd-models",
+    )
+
+    for endpoint in endpoints:
+        try:
+            response = requests.get(base + endpoint, timeout=timeout)
+        except Exception:
+            continue
+
+        if response.status_code == 401:
+            return True, True, endpoint
+        if response.status_code == 200:
+            return True, False, endpoint
+
+    return False, False, ""
+
+
 def startup_check():
     config_exists = True
     if os.path.isfile(f'{path}config.toml'):
@@ -466,36 +495,35 @@ def startup_check():
     print(f'Using URL: {global_var.url}')
     print(f'Using outputs directory: {global_var.dir}')
 
-    # check if Web UI is running
-    connected = False
-    while not connected:
-        try:
-            response = requests.get(global_var.url + '/sdapi/v1/cmd-flags')
-            # lazy method to see if --api-auth commandline argument is set
-            if response.status_code == 401:
+    # check if Web UI API is running
+    warned_missing_api_creds = False
+    while True:
+        ready, auth_required, endpoint = _probe_sd_api(global_var.url, timeout=10)
+        if ready:
+            if auth_required:
                 global_var.api_auth = True
-                # lazy method to see if --api-auth credentials are set
-                if (not global_var.api_pass) or (not global_var.api_user):
-                    print('API rejected me! If using --api-auth, '
-                          'please check your .env file for APIUSER and APIPASS values.')
-                    os.system("pause")
-            # lazy method to see if --api commandline argument is not set
-            if response.status_code == 404:
-                print('API is unreachable! Please check Web UI COMMANDLINE_ARGS for --api.')
-                os.system("pause")
+                if ((not global_var.api_pass) or (not global_var.api_user)) and not warned_missing_api_creds:
+                    print(
+                        'API requires authentication. Please set APIUSER and APIPASS in your .env '
+                        f'(detected via {endpoint}).'
+                    )
+                    warned_missing_api_creds = True
             return requests.head(global_var.url)
-        except(Exception,):
-            print(f'Waiting for Web UI at {global_var.url}...')
-            time.sleep(20)
+
+        print(f'Waiting for Web UI API at {global_var.url}...')
+        time.sleep(5)
 
 def check_webui_running(global_var):
     try:
-        response = requests.get(global_var.url + '/sdapi/v1/cmd-flags')
-        if response.status_code == 404:
+        ready, _, endpoint = _probe_sd_api(global_var.url, timeout=6)
+        if not ready:
             print('API is unreachable! Please check the WebUI manually.')
             return True
+        if endpoint != "/sdapi/v1/cmd-flags":
+            print(f"WebUI reachable via fallback endpoint: {endpoint}")
     except Exception as e:
         print(f'An exception occurred while checking if the WebUI is online:\ns{str(e)}')
+        return True
     return False
 
 def files_check():

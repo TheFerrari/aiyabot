@@ -163,6 +163,9 @@ Optional:
 # - empty: auto-start if start config exists.
 SD_AUTO_START_ON_BOOT = "True"
 
+# Windows only: launch SD in a separate console window.
+SD_START_SEPARATE_CONSOLE = "True"
+
 # Maximum seconds AIYA waits for /sdapi to come online after start/restart.
 SD_START_TIMEOUT_S = 120
 
