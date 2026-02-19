@@ -257,7 +257,7 @@ if enable_power_monitor:
         sensor_debug_reader = env_sensor_debug_reader()
         power_monitor.sample_callback = _record_power_sample
     except Exception as e:
-        print(f"Warning: failed to initialize PowerMonitor: {e}")
+        bot.logger.warning("PowerMonitor initialization failed: %s", e)
         power_monitor = None
         temperature_reader = None
         sensor_snapshot_reader = None
@@ -337,10 +337,12 @@ try:
     _auto_start_sd_if_needed()
     settings.startup_check()
     settings.files_check()
-    print("âœ… InicializaciÃ³n completada exitosamente")
+    bot.logger.info("Startup completed successfully.")
 except Exception as e:
-    print(f"âš ï¸  Advertencia durante la inicializaciÃ³n: {e}")
-    print("El bot continuarÃ¡ ejecutÃ¡ndose, pero algunas funciones pueden no estar disponibles.")
+    bot.logger.warning("Startup warning: %s", e)
+    bot.logger.warning(
+        "The bot will keep running, but some features may be unavailable."
+    )
 
 # Load extensions
 bot.load_extension('core.settingscog')
