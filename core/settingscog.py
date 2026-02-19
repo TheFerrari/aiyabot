@@ -100,6 +100,13 @@ class SettingsCog(commands.Cog):
     else:
         size_auto = None
 
+    # Discord limits choices to 25; only include fixed choices when within limit.
+    _SIZE_CHOICES = (
+        settings.global_var.size_range
+        if len(settings.global_var.size_range) <= 25
+        else None
+    )
+
     @commands.slash_command(name='settings', description='Review and change channel defaults')
     @option(
         'current_settings',
@@ -146,7 +153,7 @@ class SettingsCog(commands.Cog):
         description='Set default width for the channel',
         required=False,
         autocomplete=ac.size_autocomplete,
-        choices=settings.global_var.size_range
+        **({"choices": _SIZE_CHOICES} if _SIZE_CHOICES else {})
     )
     @option(
         'height',
@@ -154,7 +161,7 @@ class SettingsCog(commands.Cog):
         description='Set default height for the channel',
         required=False,
         autocomplete=ac.size_autocomplete,
-        choices=settings.global_var.size_range
+        **({"choices": _SIZE_CHOICES} if _SIZE_CHOICES else {})
     )
     @option(
         'guidance_scale',

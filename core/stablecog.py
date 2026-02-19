@@ -49,6 +49,13 @@ size_ratios = {
     "Tall: 9:16 - 768x1344": (768, 1344)
 }
 
+# Discord limits choices to 25; only include fixed choices when within limit.
+_SIZE_CHOICES = (
+    settings.global_var.size_range
+    if len(settings.global_var.size_range) <= 25
+    else None
+)
+
 
 class SDBackend(str, Enum):
     """Tipo de backend de Stable Diffusion que estamos usando.
@@ -359,7 +366,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         description='Width of the generated image.',
         required=False,
         autocomplete=ac.size_autocomplete,
-        choices=settings.global_var.size_range
+        **({"choices": _SIZE_CHOICES} if _SIZE_CHOICES else {})
     )
     @option(
         'height',
@@ -367,7 +374,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         description='Height of the generated image.',
         required=False,
         autocomplete=ac.size_autocomplete,
-        choices=settings.global_var.size_range
+        **({"choices": _SIZE_CHOICES} if _SIZE_CHOICES else {})
     )
     @option(
         'size_ratio',
