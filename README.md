@@ -173,6 +173,45 @@ SD_START_TIMEOUT_S = 120
 SD_CONTROL_ALLOWED_USER_IDS = "123456789012345678,987654321098765432"
 ```
 
+### Optional Wake-on-LAN before SD API payloads
+
+Use this when AIYA runs on a low-power host and the Stable Diffusion server runs on a second machine that can wake from sleep.
+When enabled, AIYA can send a Wake-on-LAN magic packet right before `/sdapi` requests.
+
+```dotenv
+# Enable Wake-on-LAN flow before SD API requests.
+SD_WAKE_ON_LAN_ENABLED = "True"
+
+# Target machine NIC MAC address (accepts AA:BB:CC:DD:EE:FF or AA-BB-CC-DD-EE-FF).
+SD_WAKE_ON_LAN_MAC = "34:5A:60:36:58:09"
+
+# Broadcast destination used for magic packet.
+SD_WAKE_ON_LAN_BROADCAST_IP = "192.168.100.255"
+SD_WAKE_ON_LAN_PORT = 9
+
+# Wait time after sending the packet, before the API request.
+SD_WAKE_ON_LAN_BOOT_WAIT_S = 12
+
+# Minimum time between two packet sends.
+SD_WAKE_ON_LAN_COOLDOWN_S = 45
+
+# If a recent SD request succeeded, skip waking/waiting for this many seconds.
+SD_WAKE_ON_LAN_AWAKE_GRACE_S = 900
+
+# Restrict wake logic to /sdapi requests only (recommended).
+SD_WAKE_ON_LAN_ONLY_SDAPI = "True"
+
+# Optional explicit SD API base URL to match for wake behavior.
+# Defaults to URL if omitted.
+# SD_WAKE_ON_LAN_TARGET_URL = "http://192.168.100.10:7860"
+```
+
+Behavior notes:
+
+- If Wake-on-LAN is disabled, AIYA behaves exactly as before.
+- Wake is attempted only for matching SD API requests.
+- If `SD_WAKE_ON_LAN_MAC` is missing or invalid, the feature self-disables and logs a warning.
+
 ## Deploy with Docker
 
 AIYA can be deployed using Docker.

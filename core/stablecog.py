@@ -8,9 +8,11 @@ import math
 import os
 import random
 import requests
+import socket
 import time
 import threading
 from enum import Enum
+from urllib.parse import urlparse
 #from core.mask_server import MaskEditorServer
 from PIL import Image, PngImagePlugin
 from discord import option
@@ -195,19 +197,186 @@ def _filter_options_payload_for_backend(url: str, payload):
     return payload
 
 
+def _env_truthy(value: str) -> bool:
+    return str(value).strip().lower() in {"true", "1", "t", "yes", "y", "on"}
+
+
+def _safe_float_env(var_name: str, default: float) -> float:
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("[wol] Invalid float for %s=%s. Using default=%s", var_name, raw, default)
+        return default
+    return max(0.0, value)
+
+
+def _safe_int_env(var_name: str, default: int) -> int:
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("[wol] Invalid integer for %s=%s. Using default=%s", var_name, raw, default)
+        return default
+    return value
+
+
+def _build_wol_magic_packet(mac_address: str) -> bytes:
+    mac_clean = mac_address.replace(":", "").replace("-", "").strip()
+    if len(mac_clean) != 12 or any(c not in "0123456789abcdefABCDEF" for c in mac_clean):
+        raise ValueError(f"Invalid MAC address: {mac_address}")
+    mac_bytes = bytes.fromhex(mac_clean)
+    return b"\xff" * 6 + mac_bytes * 16
+
+
+def _send_wol_magic_packet(mac_address: str, broadcast_ip: str, port: int) -> None:
+    packet = _build_wol_magic_packet(mac_address)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.sendto(packet, (broadcast_ip, port))
+    finally:
+        sock.close()
+
+
+def _url_base(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return ""
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
+_WOL_ENABLED = _env_truthy(os.getenv("SD_WAKE_ON_LAN_ENABLED", "False"))
+_WOL_MAC = (os.getenv("SD_WAKE_ON_LAN_MAC") or "").strip()
+_WOL_BROADCAST_IP = (os.getenv("SD_WAKE_ON_LAN_BROADCAST_IP") or "255.255.255.255").strip()
+_WOL_PORT = _safe_int_env("SD_WAKE_ON_LAN_PORT", 9)
+_WOL_BOOT_WAIT_S = _safe_float_env("SD_WAKE_ON_LAN_BOOT_WAIT_S", 12.0)
+_WOL_COOLDOWN_S = _safe_float_env("SD_WAKE_ON_LAN_COOLDOWN_S", 45.0)
+_WOL_AWAKE_GRACE_S = _safe_float_env("SD_WAKE_ON_LAN_AWAKE_GRACE_S", 900.0)
+_WOL_ONLY_SDAPI = _env_truthy(os.getenv("SD_WAKE_ON_LAN_ONLY_SDAPI", "True"))
+_WOL_TARGET_URL = (
+    (os.getenv("SD_WAKE_ON_LAN_TARGET_URL") or "").strip().rstrip("/")
+    or (getattr(settings.global_var, "url", "") or "").strip().rstrip("/")
+)
+
+if _WOL_ENABLED and not _WOL_MAC:
+    logger.warning(
+        "[wol] SD_WAKE_ON_LAN_ENABLED=True but SD_WAKE_ON_LAN_MAC is empty. Wake-on-LAN disabled."
+    )
+    _WOL_ENABLED = False
+
+if _WOL_ENABLED and not (0 < _WOL_PORT < 65536):
+    logger.warning("[wol] Invalid SD_WAKE_ON_LAN_PORT=%s. Wake-on-LAN disabled.", _WOL_PORT)
+    _WOL_ENABLED = False
+
+_WOL_TARGET_BASE = _url_base(_WOL_TARGET_URL)
+_WOL_LOCK = threading.Lock()
+_WOL_LAST_WAKE_MONOTONIC = 0.0
+_WOL_HOLD_UNTIL_MONOTONIC = 0.0
+_WOL_LAST_SUCCESS_MONOTONIC = 0.0
+
+
+def _is_target_sd_api_request(url: str) -> bool:
+    url_str = str(url or "")
+    lowered = url_str.lower()
+
+    if _WOL_ONLY_SDAPI and "/sdapi/" not in lowered:
+        return False
+
+    if not _WOL_TARGET_URL:
+        return True
+
+    # Compare scheme://host:port when available to avoid brittle string matching.
+    request_base = _url_base(url_str)
+    if _WOL_TARGET_BASE and request_base:
+        return request_base == _WOL_TARGET_BASE
+
+    return lowered.startswith(_WOL_TARGET_URL.lower())
+
+
+def _wake_sd_host_if_needed(url: str) -> None:
+    global _WOL_LAST_WAKE_MONOTONIC, _WOL_HOLD_UNTIL_MONOTONIC
+
+    if not _WOL_ENABLED or not _is_target_sd_api_request(url):
+        return
+
+    now = time.monotonic()
+    should_send = False
+    wait_s = 0.0
+
+    with _WOL_LOCK:
+        if _WOL_AWAKE_GRACE_S > 0 and _WOL_LAST_SUCCESS_MONOTONIC > 0:
+            if (now - _WOL_LAST_SUCCESS_MONOTONIC) <= _WOL_AWAKE_GRACE_S:
+                return
+
+        if now < _WOL_HOLD_UNTIL_MONOTONIC:
+            wait_s = _WOL_HOLD_UNTIL_MONOTONIC - now
+        else:
+            elapsed = now - _WOL_LAST_WAKE_MONOTONIC if _WOL_LAST_WAKE_MONOTONIC > 0 else _WOL_COOLDOWN_S
+            if _WOL_LAST_WAKE_MONOTONIC <= 0 or elapsed >= _WOL_COOLDOWN_S:
+                _WOL_LAST_WAKE_MONOTONIC = now
+                _WOL_HOLD_UNTIL_MONOTONIC = now + _WOL_BOOT_WAIT_S
+                should_send = True
+                wait_s = _WOL_BOOT_WAIT_S
+
+    if should_send:
+        try:
+            _send_wol_magic_packet(
+                mac_address=_WOL_MAC,
+                broadcast_ip=_WOL_BROADCAST_IP,
+                port=_WOL_PORT,
+            )
+            logger.info(
+                "[wol] Magic packet sent to %s via %s:%s. Waiting %.1fs before SD payload.",
+                _WOL_MAC,
+                _WOL_BROADCAST_IP,
+                _WOL_PORT,
+                wait_s,
+            )
+        except Exception as e:
+            logger.warning("[wol] Failed to send magic packet: %s", e)
+            return
+
+    if wait_s > 0:
+        time.sleep(wait_s)
+
+
+def _mark_sd_request_success(url: str) -> None:
+    global _WOL_LAST_SUCCESS_MONOTONIC
+
+    if not _WOL_ENABLED or not _is_target_sd_api_request(url):
+        return
+
+    with _WOL_LOCK:
+        _WOL_LAST_SUCCESS_MONOTONIC = time.monotonic()
+
+
 # Monkeypatch ligero de requests para filtrar payloads incompatibles con SD.Next
 _original_requests_post = requests.post
 _original_session_post = requests.sessions.Session.post
 
 
 def _patched_requests_post(url, *args, **kwargs):
+    _wake_sd_host_if_needed(url)
     kwargs["json"] = _filter_options_payload_for_backend(url, kwargs.get("json"))
-    return _original_requests_post(url, *args, **kwargs)
+    response = _original_requests_post(url, *args, **kwargs)
+    _mark_sd_request_success(url)
+    return response
 
 
 def _patched_session_post(self, url, *args, **kwargs):
+    _wake_sd_host_if_needed(url)
     kwargs["json"] = _filter_options_payload_for_backend(url, kwargs.get("json"))
-    return _original_session_post(self, url, *args, **kwargs)
+    response = _original_session_post(self, url, *args, **kwargs)
+    _mark_sd_request_success(url)
+    return response
 
 
 requests.post = _patched_requests_post
