@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import discord
 import os
 import sys
@@ -15,6 +15,7 @@ from core.logging_setup import get_logger
 from dotenv import load_dotenv
 from core.queuehandler import GlobalQueue
 from monitoring.power_monitor import PowerMonitor
+from monitoring.power_history_store import SQLitePowerHistoryStore
 from monitoring.windows_power_reader import (
     env_power_reader,
     env_sensor_debug_reader,
@@ -91,6 +92,37 @@ HISTORY_MAX_SAMPLES = int(os.getenv("POWER_HISTORY_MAX_SAMPLES", "30000"))
 power_history = deque(maxlen=HISTORY_MAX_SAMPLES)
 power_history_lock = threading.Lock()
 
+power_history_persist_raw = os.getenv("POWER_HISTORY_PERSIST", "True")
+POWER_HISTORY_PERSIST = power_history_persist_raw.lower() in ("true", "1", "t")
+POWER_HISTORY_DB_PATH = os.getenv("POWER_HISTORY_DB_PATH", "resources/power_history.sqlite3").strip() or "resources/power_history.sqlite3"
+try:
+    POWER_HISTORY_RETENTION_DAYS = float(os.getenv("POWER_HISTORY_RETENTION_DAYS", "30"))
+except ValueError:
+    POWER_HISTORY_RETENTION_DAYS = 30.0
+
+power_history_store = None
+if POWER_HISTORY_PERSIST:
+    try:
+        retention_days = POWER_HISTORY_RETENTION_DAYS if POWER_HISTORY_RETENTION_DAYS > 0 else None
+        power_history_store = SQLitePowerHistoryStore(
+            db_path=POWER_HISTORY_DB_PATH,
+            retention_days=retention_days,
+        )
+        restored_history = power_history_store.load_latest(HISTORY_MAX_SAMPLES)
+        with power_history_lock:
+            power_history.extend(restored_history)
+        bot.logger.info(
+            "[power-history] sqlite enabled db=%s restored_samples=%s retention_days=%s",
+            POWER_HISTORY_DB_PATH,
+            len(restored_history),
+            retention_days,
+        )
+    except Exception as e:
+        bot.logger.warning("[power-history] failed to initialize sqlite store: %s", e)
+        power_history_store = None
+else:
+    bot.logger.info("[power-history] sqlite disabled by POWER_HISTORY_PERSIST=%s", power_history_persist_raw)
+
 power_monitor = None
 temperature_reader = None
 sensor_snapshot_reader = None
@@ -117,6 +149,15 @@ def _percentile(values, p):
 
 def _history_records(window_s: int):
     cutoff = datetime.now().timestamp() - window_s
+    store = power_history_store
+    if store is not None:
+        try:
+            db_records = store.load_since(cutoff_ts=cutoff, limit=HISTORY_MAX_SAMPLES)
+            if db_records:
+                return db_records
+        except Exception as e:
+            bot.logger.warning("[power-history] sqlite read failed: %s", e)
+
     with power_history_lock:
         return [row for row in power_history if row.get("ts", 0) >= cutoff]
 
@@ -196,6 +237,13 @@ def _record_power_sample(ts: float, watts: float):
     with power_history_lock:
         power_history.append(sample)
 
+    store = power_history_store
+    if store is not None:
+        try:
+            store.insert_sample(sample)
+        except Exception as e:
+            bot.logger.warning("[power-history] sqlite write failed: %s", e)
+
 
 enable_power_monitor = os.getenv("ENABLE_POWER_MONITOR", "False").lower() in ("true", "1", "t")
 if enable_power_monitor:
@@ -209,23 +257,96 @@ if enable_power_monitor:
         sensor_debug_reader = env_sensor_debug_reader()
         power_monitor.sample_callback = _record_power_sample
     except Exception as e:
-        print(f"Warning: failed to initialize PowerMonitor: {e}")
+        bot.logger.warning("PowerMonitor initialization failed: %s", e)
         power_monitor = None
         temperature_reader = None
         sensor_snapshot_reader = None
         sensor_debug_reader = None
 
+# SD process bootstrap
+def _env_truthy(value: str) -> bool:
+    return value.strip().lower() in ("true", "1", "t", "yes", "y", "on")
+
+
+def _clean_env(var_name: str) -> str:
+    return (os.getenv(var_name) or "").strip().strip('"').strip("'")
+
+
+def _has_sd_start_config() -> bool:
+    if _clean_env("SD_START_COMMAND"):
+        return True
+    if _clean_env("SD_START_BAT_PATH"):
+        return True
+    return bool(_clean_env("SD_FOLDER_PATH") and _clean_env("SD_START_BAT_FILE_NAME"))
+
+
+def _should_auto_start_sd_on_boot() -> bool:
+    """
+    Auto-start policy:
+    - If SD_AUTO_START_ON_BOOT is set, it is authoritative.
+    - Otherwise, auto-start is enabled when SD start configuration exists.
+    """
+    configured_flag = (os.getenv("SD_AUTO_START_ON_BOOT") or "").strip()
+    if configured_flag:
+        return _env_truthy(configured_flag)
+    return _has_sd_start_config()
+
+
+def _safe_int_env(var_name: str, default: int) -> int:
+    value = os.getenv(var_name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        bot.logger.warning("[sd-autostart] Invalid integer in %s=%s. Using %s.", var_name, value, default)
+        return default
+
+
+def _auto_start_sd_if_needed() -> None:
+    if not _should_auto_start_sd_on_boot():
+        bot.logger.info("[sd-autostart] Disabled. Set SD_AUTO_START_ON_BOOT=True to force-enable.")
+        return
+
+    try:
+        from monitoring.stable_diffusion_manager import StableDiffusionProcessManager
+    except Exception as e:
+        bot.logger.warning("[sd-autostart] Could not import process manager: %s", e)
+        return
+
+    manager = StableDiffusionProcessManager()
+    status = manager.get_status()
+    if status.get("api_online"):
+        bot.logger.info("[sd-autostart] SD API is already online at %s. Skipping autostart.", status.get("webui_url"))
+        return
+
+    timeout_s = _safe_int_env("SD_START_TIMEOUT_S", 120)
+    bot.logger.info("[sd-autostart] SD API offline. Attempting automatic start (timeout=%ss).", timeout_s)
+    result = manager.start(wait_for_api=True, timeout_s=timeout_s)
+    if result.ok and result.api_online:
+        bot.logger.info("[sd-autostart] %s", result.message)
+        return
+    if result.ok and not result.api_online:
+        bot.logger.warning("[sd-autostart] %s", result.message)
+        return
+    bot.logger.warning("[sd-autostart] Start failed: %s", result.message)
+
+
 # Startup checks
 try:
+    _auto_start_sd_if_needed()
     settings.startup_check()
     settings.files_check()
-    print("✅ Inicialización completada exitosamente")
+    bot.logger.info("Startup completed successfully.")
 except Exception as e:
-    print(f"⚠️  Advertencia durante la inicialización: {e}")
-    print("El bot continuará ejecutándose, pero algunas funciones pueden no estar disponibles.")
+    bot.logger.warning("Startup warning: %s", e)
+    bot.logger.warning(
+        "The bot will keep running, but some features may be unavailable."
+    )
 
 # Load extensions
 bot.load_extension('core.settingscog')
+bot.load_extension('core.sdcontrolcog')
 bot.load_extension('core.stablecog')
 bot.load_extension('core.upscalecog')
 bot.load_extension('core.identifycog')
@@ -391,7 +512,7 @@ async def power(ctx, view: str = "live", window: str = "5h", metric: str = "tota
                 f"Max: `{stats['max_w']:.2f} W`\n"
                 f"{temp_line}"
                 f"{extra_lines}"
-                f"Energy: `{stats['energy_Wh']:.3f} Wh` (`{stats['energy_kWh']:.6f} kWh`)\n"
+                f"Energy (session): `{stats['energy_Wh']:.3f} Wh` (`{stats['energy_kWh']:.6f} kWh`)\n"
                 f"Elapsed: `{stats['elapsed_s']:.1f} s`"
             )
 
@@ -511,7 +632,7 @@ async def on_ready():
 # Event: on_raw_reaction_add
 @bot.event
 async def on_raw_reaction_add(ctx):
-    if ctx.emoji.name == '❌':
+    if ctx.emoji.name == 'âŒ':
         try:
             end_user = f'{ctx.user_id}'
             message = await bot.get_channel(ctx.channel_id).fetch_message(ctx.message_id)
@@ -534,6 +655,11 @@ async def on_guild_join(guild):
 async def shutdown(bot):
     if power_monitor is not None:
         power_monitor.stop_background()
+    if power_history_store is not None:
+        try:
+            power_history_store.close()
+        except Exception:
+            pass
     await bot.close()
 
 # Run the bot
@@ -550,3 +676,4 @@ except Exception as e:
     asyncio.run(shutdown(bot))
 finally:
     sys.exit(0)
+
