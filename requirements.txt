@@ -11,3 +11,4 @@ numpy
 opencv-python
 playwright
 tqdm
+matplotlib

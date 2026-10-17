@@ -201,6 +201,10 @@ SD_WAKE_ON_LAN_AWAKE_GRACE_S = 900
 # Restrict wake logic to /sdapi requests only (recommended).
 SD_WAKE_ON_LAN_ONLY_SDAPI = "True"
 
+# Optional: send one startup magic packet before startup checks run.
+# Set to False if you only want on-demand wake during /sdapi requests.
+SD_WAKE_ON_LAN_WAKE_ON_STARTUP = "True"
+
 # Optional explicit SD API base URL to match for wake behavior.
 # Defaults to URL if omitted.
 # SD_WAKE_ON_LAN_TARGET_URL = "http://192.168.100.10:7860"
@@ -209,6 +213,7 @@ SD_WAKE_ON_LAN_ONLY_SDAPI = "True"
 Behavior notes:
 
 - If Wake-on-LAN is disabled, AIYA behaves exactly as before.
+- When WOL is enabled, AIYA sends one startup wake packet before startup checks.
 - Wake is attempted only for matching SD API requests.
 - If `SD_WAKE_ON_LAN_MAC` is missing or invalid, the feature self-disables and logs a warning.
 

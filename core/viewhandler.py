@@ -468,6 +468,13 @@ class DrawView(View):
     async def button_roll(self, button, interaction):
         buttons_free = True
         try:
+            if not isinstance(self.input_tuple, tuple):
+                await interaction.response.send_message(
+                    "I may have been restarted. This button no longer works.",
+                    ephemeral=True,
+                )
+                return
+
             # check if the output is from the person who requested it
             if settings.global_var.restrict_buttons == 'True':
                 if interaction.user.id != self.input_tuple[0].author.id:

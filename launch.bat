@@ -20,11 +20,11 @@ if not exist "%VENV_PY%" (
   )
 )
 
-"%VENV_PIP%" install -r requirements.txt
-if errorlevel 1 (
-  echo [ERROR] Failed installing requirements.
-  exit /b 1
-)
+REM "%VENV_PIP%" install -r requirements.txt
+REM if errorlevel 1 (
+REM  echo [ERROR] Failed installing requirements.
+REM  exit /b 1
+REM ) 
 
 "%VENV_PY%" core/setup_generate.py
 if errorlevel 1 (

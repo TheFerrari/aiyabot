@@ -3,6 +3,7 @@ from asyncio import AbstractEventLoop, get_event_loop, run_coroutine_threadsafe
 from discord import option
 from discord.ui import Button, View, Select
 from discord.ext import commands
+import os
 from typing import Optional
 
 from core import queuehandler
@@ -15,7 +16,8 @@ from core.leaderboardcog import LeaderboardCog
 
 logger = get_logger(__name__)
 
-USE_LLAMA_CPP = True
+LLAMA_BACKEND = os.getenv("LLAMA_BACKEND", "llama_cpp").strip().lower()
+USE_LLAMA_CPP = LLAMA_BACKEND == "llama_cpp"
 
 if USE_LLAMA_CPP:
     from llama_cpp import Llama
@@ -355,18 +357,34 @@ class GenerateCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.current_model = "WizzGPTV6"
+        self.use_llama_cpp = USE_LLAMA_CPP
 
-        if USE_LLAMA_CPP:
-            self.llm = Llama(
-                model_path="core/WizzGPT6/WizzGPTv6.Q8_0.gguf",
-                n_ctx=1024,
-                n_threads=8,
-                use_mlock=True,
-                verbose=False
-            )
-        else:
-            self.models = {}
-            self.tokenizers = {}
+        self.llm = None
+        self.models = {}
+        self.tokenizers = {}
+
+        if self.use_llama_cpp:
+            try:
+                self.llm = Llama(
+                    model_path="core/WizzGPT6/WizzGPTv6.Q8_0.gguf",
+                    n_ctx=1024,
+                    n_threads=8,
+                    use_mlock=True,
+                    verbose=False,
+                )
+            except OSError as e:
+                # En Windows, 0xc000001d suele ser "illegal instruction" (AVX/AVX2 mismatch).
+                logger.warning(
+                    "No se pudo inicializar llama_cpp (%s). "
+                    "Falling back a transformers. Sugerencia: instala un build compatible de llama-cpp-python "
+                    "(por ejemplo 'noavx') o usa LLAMA_BACKEND=transformers.",
+                    e,
+                )
+                self.use_llama_cpp = False
+
+        if not self.use_llama_cpp:
+            # Import perezoso para permitir fallback incluso si LLAMA_BACKEND=llama_cpp.
+            from transformers import AutoModelForCausalLM, AutoTokenizer
             for model_name, model_path in model_paths.items():
                 tokenizer = AutoTokenizer.from_pretrained(model_path)
                 model = AutoModelForCausalLM.from_pretrained(model_path)
@@ -374,7 +392,7 @@ class GenerateCog(commands.Cog):
                 self.tokenizers[model_name] = tokenizer
 
     def get_model_and_tokenizer(self, model_name):
-        if USE_LLAMA_CPP:
+        if self.use_llama_cpp:
             return self.llm, None
         else:
             return self.models.get(model_name), self.tokenizers.get(model_name)

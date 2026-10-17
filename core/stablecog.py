@@ -301,7 +301,7 @@ def _is_target_sd_api_request(url: str) -> bool:
     return lowered.startswith(_WOL_TARGET_URL.lower())
 
 
-def _wake_sd_host_if_needed(url: str) -> None:
+def _wake_sd_host_if_needed(url: str, wait: bool = True, force: bool = False) -> None:
     global _WOL_LAST_WAKE_MONOTONIC, _WOL_HOLD_UNTIL_MONOTONIC
 
     if not _WOL_ENABLED or not _is_target_sd_api_request(url):
@@ -312,7 +312,7 @@ def _wake_sd_host_if_needed(url: str) -> None:
     wait_s = 0.0
 
     with _WOL_LOCK:
-        if _WOL_AWAKE_GRACE_S > 0 and _WOL_LAST_SUCCESS_MONOTONIC > 0:
+        if (not force) and _WOL_AWAKE_GRACE_S > 0 and _WOL_LAST_SUCCESS_MONOTONIC > 0:
             if (now - _WOL_LAST_SUCCESS_MONOTONIC) <= _WOL_AWAKE_GRACE_S:
                 return
 
@@ -344,7 +344,7 @@ def _wake_sd_host_if_needed(url: str) -> None:
             logger.warning("[wol] Failed to send magic packet: %s", e)
             return
 
-    if wait_s > 0:
+    if wait and wait_s > 0:
         time.sleep(wait_s)
 
 
@@ -356,6 +356,17 @@ def _mark_sd_request_success(url: str) -> None:
 
     with _WOL_LOCK:
         _WOL_LAST_SUCCESS_MONOTONIC = time.monotonic()
+
+
+def _wake_sd_host_proactively(wait: bool = True, force: bool = False) -> None:
+    if not _WOL_ENABLED:
+        return
+
+    target_base = (_WOL_TARGET_URL or (getattr(settings.global_var, "url", "") or "")).strip().rstrip("/")
+    if not target_base:
+        return
+
+    _wake_sd_host_if_needed(f"{target_base}/sdapi/v1/txt2img", wait=wait, force=force)
 
 
 # Monkeypatch ligero de requests para filtrar payloads incompatibles con SD.Next
@@ -743,10 +754,12 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             asyncio.create_task(self._infinite_loop(ctx, **loop_opts))
             return
 
+        is_interaction_context = not called_from_button and not getattr(ctx, "_infinite_job", False)
+        if is_interaction_context and not ctx.interaction.response.is_done():
+            await ctx.defer()
+
         # generate a random prompt if random_prompt is True
-        deferred = False
         if random_prompt == "True":
-            await ctx.defer()            
             num_prompts = 1
 
             # manage True:x
@@ -767,7 +780,6 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 generated_prompt_task = asyncio.create_task(self.generate_prompt_async(start_prompt))
                 generated_prompt = await generated_prompt_task
                 prompt = generated_prompt
-                deferred = True
 
         if random_style == "True":
             settings_cog = self.bot.get_cog('SettingsCog')
@@ -852,7 +864,11 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 or settings.global_var.prompt_prefix):
             mod_results = settings.prompt_mod(simple_prompt, negative_prompt)
             if mod_results[0] == "Stop":
-                await ctx.respond(f"I'm not allowed to draw the word {mod_results[1]}!", ephemeral=True)
+                blocked_message = f"I'm not allowed to draw the word {mod_results[1]}!"
+                if is_interaction_context and ctx.interaction.response.is_done():
+                    await ctx.followup.send(blocked_message, ephemeral=True)
+                else:
+                    await ctx.respond(blocked_message, ephemeral=True)
                 return
             if mod_results[0] == "Mod":
                 if settings.global_var.display_ignored_words == "False":
@@ -906,7 +922,11 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 logger.info("init_url override applied successfully: init_url=%s", init_url)
             except(Exception,):
                 logger.warning("init_url override failed, URL not reachable: init_url=%s", init_url)
-                await ctx.send_response('URL image not found!\nI will do my best without it!')
+                missing_image_message = 'URL image not found!\nI will do my best without it!'
+                if is_interaction_context and ctx.interaction.response.is_done():
+                    await ctx.followup.send(missing_image_message)
+                else:
+                    await ctx.send_response(missing_image_message)
 
         # size_ratio preset will override height and width
         if size_ratio:
@@ -1038,12 +1058,18 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             bool(init_image),
         )
 
+        _wake_sd_host_proactively(wait=False)
+
         view = viewhandler.DrawView(input_tuple)
         # setup the queue
         user_queue_limit = settings.queue_check(ctx.author)
         if queuehandler.GlobalQueue.dream_thread.is_alive():
             if user_queue_limit == "Stop":
-                await ctx.send_response(content=f"Please wait! You're past your queue limit of {settings.global_var.queue_limit}.", ephemeral=True)
+                limit_message = f"Please wait! You're past your queue limit of {settings.global_var.queue_limit}."
+                if is_interaction_context and ctx.interaction.response.is_done():
+                    await ctx.followup.send(limit_message, ephemeral=True)
+                else:
+                    await ctx.respond(limit_message, ephemeral=True)
             else:
                 queuehandler.GlobalQueue.queue.append(queuehandler.DrawObject(self, *input_tuple, view))
         else:
@@ -1052,7 +1078,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         message_to_send = f'<@{ctx.author.id}>, {settings.messages()}\nQueue: ``{len(queuehandler.GlobalQueue.queue)}`` - ``{simple_prompt}``\nSteps: ``{steps}``{reply_adds}'
 
         # check if webui is online
-        webui_is_offline = settings.check_webui_running(settings.global_var)
+        webui_is_offline = await asyncio.to_thread(settings.check_webui_running, settings.global_var)
         if webui_is_offline:
             message_to_send += "\nNote: The model is currently offline. Your request won't be lost, it will be processed when it's back online !"
 
@@ -1185,6 +1211,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             
             status_message_task = None
             status_thread = None
+            _wake_sd_host_proactively(wait=True)
 
             if live_preview:
                 # Crear mensaje de estado inicial para live preview
@@ -1301,7 +1328,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             
             # Verificar que la sesión se haya creado correctamente
             if s is None:
-                error_msg = "❌ No se pudo conectar con la Web UI de Stable Diffusion. Verifica que esté ejecutándose."
+                error_msg = "❌ Could not connect to the Stable Diffusion Web UI. Verify it is running."
                 event_loop.create_task(queue_object.ctx.channel.send(error_msg))
                 queue_object.is_done = True
                 return
@@ -1364,7 +1391,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
             # hires payload
             if queue_object.highres_fix != 'Disabled':
-                upscale_ratio = 1.2
+                upscale_ratio = 1.6
                 base_steps = max(1, int(float(queue_object.steps)))
                 hr_second_pass_steps = max(1, base_steps // 2)
                 queue_object.width = int(queue_object.width * upscale_ratio)

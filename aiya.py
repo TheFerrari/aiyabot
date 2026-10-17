@@ -4,6 +4,7 @@ import os
 import sys
 import io
 import threading
+import socket
 import importlib.util
 from collections import deque
 from datetime import datetime
@@ -303,6 +304,50 @@ def _safe_int_env(var_name: str, default: int) -> int:
         return default
 
 
+def _build_wol_magic_packet(mac_address: str) -> bytes:
+    mac_clean = mac_address.replace(":", "").replace("-", "").strip()
+    if len(mac_clean) != 12 or any(c not in "0123456789abcdefABCDEF" for c in mac_clean):
+        raise ValueError(f"Invalid MAC address: {mac_address}")
+    mac_bytes = bytes.fromhex(mac_clean)
+    return b"\xff" * 6 + mac_bytes * 16
+
+
+def _wake_sd_host_on_boot_if_needed() -> None:
+    if not _env_truthy(os.getenv("SD_WAKE_ON_LAN_ENABLED", "False")):
+        return
+
+    if not _env_truthy(os.getenv("SD_WAKE_ON_LAN_WAKE_ON_STARTUP", "True")):
+        bot.logger.info("[wol-startup] Disabled via SD_WAKE_ON_LAN_WAKE_ON_STARTUP=False.")
+        return
+
+    mac_address = (os.getenv("SD_WAKE_ON_LAN_MAC") or "").strip()
+    if not mac_address:
+        bot.logger.warning(
+            "[wol-startup] SD_WAKE_ON_LAN_ENABLED=True but SD_WAKE_ON_LAN_MAC is empty. Skipping startup wake."
+        )
+        return
+
+    broadcast_ip = (os.getenv("SD_WAKE_ON_LAN_BROADCAST_IP") or "255.255.255.255").strip()
+    port = _safe_int_env("SD_WAKE_ON_LAN_PORT", 9)
+    if not (0 < port < 65536):
+        bot.logger.warning("[wol-startup] Invalid SD_WAKE_ON_LAN_PORT=%s. Skipping startup wake.", port)
+        return
+
+    try:
+        packet = _build_wol_magic_packet(mac_address)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.sendto(packet, (broadcast_ip, port))
+        bot.logger.info(
+            "[wol-startup] Magic packet sent to %s via %s:%s before startup checks.",
+            mac_address,
+            broadcast_ip,
+            port,
+        )
+    except Exception as e:
+        bot.logger.warning("[wol-startup] Failed to send startup magic packet: %s", e)
+
+
 def _auto_start_sd_if_needed() -> None:
     if not _should_auto_start_sd_on_boot():
         bot.logger.info("[sd-autostart] Disabled. Set SD_AUTO_START_ON_BOOT=True to force-enable.")
@@ -334,6 +379,7 @@ def _auto_start_sd_if_needed() -> None:
 
 # Startup checks
 try:
+    _wake_sd_host_on_boot_if_needed()
     _auto_start_sd_if_needed()
     settings.startup_check()
     settings.files_check()

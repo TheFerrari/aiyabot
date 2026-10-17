@@ -5,16 +5,19 @@ import os
 import random
 import re
 import requests
+import socket
 import time
 import tomlkit
 from typing import Optional
 
 from core import queuehandler
+from core.logging_setup import get_logger
 
 self = discord.Bot()
 dir_path = os.path.dirname(os.path.realpath(__file__))
 path = 'resources/'.format(dir_path)
 template = {}
+logger = get_logger(__name__)
 
 # default config data
 default_config = """# This is the config file. It's advisable to restart if any changes are made.
@@ -373,38 +376,120 @@ def update(channel_id: str, sett: str, value):
         json.dump(settings, configfile, indent=1)
 
 
+def _env_truthy(value: str) -> bool:
+    return str(value).strip().lower() in {"true", "1", "t", "yes", "y", "on"}
+
+
+def _build_wol_magic_packet(mac_address: str) -> bytes:
+    mac_clean = mac_address.replace(":", "").replace("-", "").strip()
+    if len(mac_clean) != 12 or any(c not in "0123456789abcdefABCDEF" for c in mac_clean):
+        raise ValueError(f"Invalid MAC address: {mac_address}")
+    mac_bytes = bytes.fromhex(mac_clean)
+    return b"\xff" * 6 + mac_bytes * 16
+
+
+def _safe_wol_port() -> int:
+    raw_port = os.getenv("SD_WAKE_ON_LAN_PORT", "9")
+    try:
+        port = int(raw_port)
+    except ValueError:
+        return -1
+    if 0 < port < 65536:
+        return port
+    return -1
+
+
+def _safe_wol_boot_wait_s() -> float:
+    raw_wait = os.getenv("SD_WAKE_ON_LAN_BOOT_WAIT_S", "12")
+    try:
+        wait_s = float(raw_wait)
+    except ValueError:
+        return 12.0
+    return max(0.0, wait_s)
+
+
+def _send_wol_for_auth_retry() -> bool:
+    if not _env_truthy(os.getenv("SD_WAKE_ON_LAN_ENABLED", "False")):
+        return False
+
+    mac_address = (os.getenv("SD_WAKE_ON_LAN_MAC") or "").strip()
+    if not mac_address:
+        print("[wol-auth] SD_WAKE_ON_LAN_ENABLED=True but SD_WAKE_ON_LAN_MAC is empty. Skipping auth wake.")
+        return False
+
+    broadcast_ip = (os.getenv("SD_WAKE_ON_LAN_BROADCAST_IP") or "255.255.255.255").strip()
+    port = _safe_wol_port()
+    if port < 0:
+        print(f"[wol-auth] Invalid SD_WAKE_ON_LAN_PORT={os.getenv('SD_WAKE_ON_LAN_PORT')}. Skipping auth wake.")
+        return False
+
+    wait_s = _safe_wol_boot_wait_s()
+
+    try:
+        packet = _build_wol_magic_packet(mac_address)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.sendto(packet, (broadcast_ip, port))
+        print(f"[wol-auth] Magic packet sent to {mac_address} via {broadcast_ip}:{port}. Waiting {wait_s:.1f}s before auth retry.")
+        if wait_s > 0:
+            time.sleep(wait_s)
+        return True
+    except Exception as e:
+        print(f"[wol-auth] Failed to send magic packet during auth recovery: {e}")
+        return False
+
+
+def _perform_auth_login(session: requests.Session) -> None:
+    if global_var.gradio_auth is None:
+        response = session.get(global_var.url + '/sdapi/v1/cmd-flags', timeout=10)
+        global_var.gradio_auth = response.status_code == 401
+        if response.status_code not in (200, 401):
+            logger.warning(
+                "Stable Diffusion /sdapi/v1/cmd-flags returned HTTP %s; continuing without Gradio login.",
+                response.status_code,
+            )
+
+    if global_var.gradio_auth:
+        login_payload = {
+            'username': global_var.username,
+            'password': global_var.password
+        }
+        session.post(global_var.url + '/login', data=login_payload, timeout=10)
+        return
+
+    logger.info("Stable Diffusion API does not require Gradio login; skipping /login POST.")
+    session.close()
+
+
 def authenticate_user():
     s = requests.Session()
     if global_var.api_auth:
         s.auth = (global_var.api_user, global_var.api_pass)
 
     try:
-        # do a check to see if --gradio-auth is set
-        if global_var.gradio_auth is None:
-            r = s.get(global_var.url + '/sdapi/v1/cmd-flags', timeout=10)
-            if r.status_code == 401:
-                global_var.gradio_auth = True
-            else:
-                global_var.gradio_auth = False
-
-        if global_var.gradio_auth:
-            login_payload = {
-                'username': global_var.username,
-                'password': global_var.password
-            }
-            s.post(global_var.url + '/login', data=login_payload, timeout=10)
-        else:
-            s.post(global_var.url + '/login', timeout=10)
+        _perform_auth_login(s)
     except requests.exceptions.ConnectionError as e:
-        print(f"Error de conexión al intentar autenticarse con {global_var.url}: {e}")
-        print("Asegúrate de que la Web UI de Stable Diffusion esté ejecutándose en la URL configurada.")
+        print(f"Connection error while authenticating with {global_var.url}: {e}")
+        print("Make sure the Stable Diffusion Web UI is running at the configured URL.")
+        if _send_wol_for_auth_retry():
+            try:
+                _perform_auth_login(s)
+                return s
+            except Exception as retry_error:
+                print(f"Authentication retry failed after WOL wake: {retry_error}")
         return None
     except requests.exceptions.Timeout as e:
-        print(f"Timeout al intentar autenticarse con {global_var.url}: {e}")
-        print("La Web UI de Stable Diffusion no responde. Verifica que esté ejecutándose.")
+        print(f"Authentication timeout while connecting to {global_var.url}: {e}")
+        print("The Stable Diffusion Web UI is not responding. Verify it is running.")
+        if _send_wol_for_auth_retry():
+            try:
+                _perform_auth_login(s)
+                return s
+            except Exception as retry_error:
+                print(f"Authentication retry failed after WOL wake: {retry_error}")
         return None
     except Exception as e:
-        print(f"Error inesperado durante la autenticación: {e}")
+        print(f"Unexpected error during authentication: {e}")
         return None
     
     return s
@@ -648,17 +733,29 @@ def populate_global_vars():
         r6 = s.get(global_var.url + "/sdapi/v1/upscalers", timeout=10)
         r7 = s.get(global_var.url + "/sdapi/v1/schedulers", timeout=10)
         r = s.get(global_var.url + "/sdapi/v1/sd-models", timeout=10)
+        logger.info(
+            "Stable Diffusion list endpoint statuses: samplers=%s styles=%s hypernets=%s upscalers=%s schedulers=%s models=%s",
+            r1.status_code,
+            r2.status_code,
+            r5.status_code,
+            r6.status_code,
+            r7.status_code,
+            r.status_code,
+        )
     except requests.exceptions.ConnectionError as e:
         print(f"Error de conexión al cargar datos de la Web UI: {e}")
         print("Algunas funciones pueden no estar disponibles.")
+        logger.exception("Connection error while loading Stable Diffusion global lists.")
         return
     except requests.exceptions.Timeout as e:
         print(f"Timeout al cargar datos de la Web UI: {e}")
         print("Algunas funciones pueden no estar disponibles.")
+        logger.exception("Timeout while loading Stable Diffusion global lists.")
         return
     except Exception as e:
         print(f"Error inesperado al cargar datos de la Web UI: {e}")
         print("Algunas funciones pueden no estar disponibles.")
+        logger.exception("Unexpected error while loading Stable Diffusion global lists.")
         return
     try:
         for s1 in r1.json():
@@ -688,10 +785,15 @@ def populate_global_vars():
     #        global_var.embeddings_2.append(s4)
     
     try:
-        for s5 in r5.json():
-            global_var.hyper_names.append(s5['name'])
+        hypernet_data = r5.json()
+        if r5.status_code == 200 and isinstance(hypernet_data, list):
+            for s5 in hypernet_data:
+                global_var.hyper_names.append(s5['name'])
+        else:
+            logger.warning("Stable Diffusion hypernetworks endpoint unavailable or unexpected: status=%s", r5.status_code)
     except Exception as e:
         print(f"Error al procesar hypernetworks: {e}")
+        logger.exception("Error while processing Stable Diffusion hypernetworks.")
     
     try:
         for s6 in r6.json():
@@ -733,19 +835,37 @@ def populate_global_vars():
     try:
         with open(f'{path}models.csv', encoding='utf-8') as csv_file:
             model_data = list(csv.reader(csv_file, delimiter='|'))
+            api_models = r.json()
+            matched_api_models = set()
+            csv_model_names = set()
             for row in model_data[1:]:
-                for model in r.json():
+                csv_model_names.add(row[1])
+                for model in api_models:
                     norm_csv_path = os.path.normpath(row[1])
                     norm_api_path = os.path.normpath(model['filename'])
                     if norm_csv_path.split(os.sep)[-1] == norm_api_path.split(os.sep)[-1] \
                             or norm_csv_path.replace(os.sep, '_') == model['model_name']:
                         global_var.model_info[row[0]] = model['title'], model['model_name'], model['hash'], row[2]
+                        matched_api_models.add(model['model_name'])
                         break
         # add "Default" if models.csv is on default, or if no model matches are found
         if not global_var.model_info:
             global_var.model_info[row[0]] = '', '', '', ''
+        unmatched_api_models = [
+            model['model_name'] for model in api_models
+            if model.get('model_name') not in matched_api_models
+        ]
+        unmatched_csv_models = [
+            model_name for model_name in csv_model_names
+            if model_name and not any(model_name == model.get('model_name') for model in api_models)
+        ]
+        if unmatched_api_models:
+            logger.warning("Stable Diffusion models missing from resources/models.csv: %s", unmatched_api_models)
+        if unmatched_csv_models:
+            logger.warning("resources/models.csv entries not found in Stable Diffusion API: %s", unmatched_csv_models)
     except Exception as e:
         print(f"Error al procesar modelos: {e}")
+        logger.exception("Error while processing Stable Diffusion models.")
 
     # iterate through config for anything unobtainable from API
     try:
@@ -774,3 +894,14 @@ def populate_global_vars():
     global_var.extra_nets = global_var.hyper_names + global_var.lora_names
     global_var.lora_names.insert(0, 'None')
     global_var.hires_upscaler_names.insert(0, 'Disabled')
+    logger.info(
+        "Loaded Stable Diffusion lists: models=%s samplers=%s schedulers=%s styles=%s hypernets=%s loras=%s upscalers=%s hires_upscalers=%s",
+        len(global_var.model_info),
+        len(global_var.sampler_names),
+        len(global_var.scheduler_names),
+        len(global_var.style_names),
+        len(global_var.hyper_names),
+        len(global_var.lora_names),
+        len(global_var.upscaler_names),
+        len(global_var.hires_upscaler_names),
+    )

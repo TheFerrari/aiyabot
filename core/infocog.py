@@ -87,6 +87,20 @@ class InfoView(View):
         else:
             self.disable_nav_buttons()
 
+        if length == 0:
+            self.contents.append(
+                discord.Embed(
+                    title="Styles list",
+                    description="No styles are loaded.",
+                    colour=settings.global_var.embed_color,
+                )
+            )
+            try:
+                await interaction.response.edit_message(view=self, embed=self.contents[0])
+            except(Exception,):
+                await interaction.followup.send(view=self, embed=self.contents[0], ephemeral=True)
+            return
+
         styles = []
         for key in settings.global_var.style_names:
             styles.append(key)

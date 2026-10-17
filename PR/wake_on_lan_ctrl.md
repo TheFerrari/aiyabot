@@ -14,6 +14,7 @@ If the high-performance host is sleeping, SD API requests fail until it is manua
 ## Solution
 
 Implemented WOL support inside the existing request interception path in `core/stablecog.py` (where requests are already monkeypatched).
+Additionally, AIYA now sends an optional startup WOL packet in `aiya.py` before `settings.startup_check()` so sleeping remote hosts can be woken during boot.
 
 Before sending matching requests:
 
@@ -21,6 +22,7 @@ Before sending matching requests:
 2. Send magic packet to the configured MAC/broadcast/port.
 3. Wait a configurable boot window before sending payload.
 4. Use cooldown and "awake grace" windows to avoid repeated wake packets and avoid waiting on every request.
+5. On bot startup, send one early magic packet (opt-out with env) before startup checks.
 
 ## Environment variables
 
@@ -33,6 +35,7 @@ SD_WAKE_ON_LAN_BOOT_WAIT_S = 12
 SD_WAKE_ON_LAN_COOLDOWN_S = 45
 SD_WAKE_ON_LAN_AWAKE_GRACE_S = 900
 SD_WAKE_ON_LAN_ONLY_SDAPI = "True"
+SD_WAKE_ON_LAN_WAKE_ON_STARTUP = "True"
 # SD_WAKE_ON_LAN_TARGET_URL = "http://192.168.100.10:7860"
 ```
 
@@ -46,6 +49,8 @@ SD_WAKE_ON_LAN_ONLY_SDAPI = "True"
   - Integrated wake check into both `requests.post` and `requests.sessions.Session.post` patches.
 - `README.md`
   - Added documentation section: "Optional Wake-on-LAN before SD API payloads".
+- `aiya.py`
+  - Added early startup WOL send before startup checks (`SD_WAKE_ON_LAN_WAKE_ON_STARTUP`).
 
 ## Backward compatibility
 
@@ -63,6 +68,7 @@ SD_WAKE_ON_LAN_ONLY_SDAPI = "True"
 - Wake-on-LAN depends on network/LAN broadcast routing and motherboard/NIC BIOS settings.
 - `SD_WAKE_ON_LAN_BOOT_WAIT_S` may need tuning per hardware boot/resume time.
 - WOL is currently applied to matching `/sdapi` POST requests in the patched request path.
+- Startup wake sends a single packet (if enabled) and does not block startup with an added sleep.
 
 ## Suggested QA checklist
 
