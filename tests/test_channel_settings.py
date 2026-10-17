@@ -79,3 +79,24 @@ class ChannelSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(command.options), 25)
         self.assertNotIn('ctx', [o.name for o in command.options])
         await bot.close()
+
+
+class PrefixTests(unittest.TestCase):
+    def test_explicit_prefix_does_not_depend_on_mutable_global_prefix(self):
+        prefix = '<lora:Turbo-ANIMA-v4:0.8>'
+        with patch.object(settings.global_var, 'prompt_prefix', ''), \
+             patch.object(settings.global_var, 'prompt_ignore_list', []), \
+             patch.object(settings.global_var, 'negative_prompt_prefix', []):
+            result = settings.prompt_mod('a garden', '', prompt_prefix_override=prefix)
+        self.assertEqual(result[0], 'Mod')
+        self.assertEqual(result[1], prefix + ', a garden')
+
+    def test_prefix_is_not_duplicated_and_moderation_still_applies(self):
+        prefix = '<lora:Turbo-ANIMA-v4:0.8>'
+        prompt = prefix.lower() + ', a garden'
+        with patch.object(settings.global_var, 'prompt_ban_list', []):
+            result = settings.prompt_mod(prompt, '', prompt_prefix_override=prefix)
+        self.assertEqual(result[1], prompt)
+        with patch.object(settings.global_var, 'prompt_ban_list', ['bannedword']):
+            result = settings.prompt_mod('bannedword', '', prompt_prefix_override=prefix)
+        self.assertEqual(result[0], 'Stop')

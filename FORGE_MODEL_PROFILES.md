@@ -104,9 +104,11 @@ y Shift y permiten copiar el comando desde `/meta` o la información de imagen.
 Importar un PNG resuelve los módulos usando la configuración actual del bot;
 no ejecuta las rutas de módulos guardadas en un PNG externo.
 
-El perfil Anima omite por defecto el prefijo de prompt, LoRA, hypernet y estilo
-automáticos del canal para evitar heredar ajustes de XL. Se pueden pasar LoRAs
-y estilos explícitos. Se conservan las reglas de moderación y el prefijo
+El perfil Anima omite por defecto la LoRA, hypernet y estilo automáticos del
+canal para evitar heredar ajustes de XL. Un `prompt_prefix` configurado
+explícitamente en el canal sí se aplica a Anima, incluyendo etiquetas como
+`<lora:Turbo-ANIMA-v4:0.8>`. Este prefijo no depende de `inherit_prompt_defaults`.
+Se pueden pasar también LoRAs y estilos explícitos. Se conservan las reglas de moderación y el prefijo
 negativo. CLIP skip no se envía a Anima. Hires y ADetailer se activan de forma
 explícita para Anima.
 

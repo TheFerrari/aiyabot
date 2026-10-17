@@ -378,6 +378,7 @@ class DrawModal(Modal):
                 pen[22], {name: pen[index] for name, index in model_profiles.PARAMETER_INDICES.items()},
             )
         inherit_prompt_defaults = not pen[22] or pen[22]['inherit_prompt_defaults']
+        channel_prefix = settings.read(str(pen[0].channel.id)).get('prompt_prefix')
 
         # stop and give a useful message if any extended edit values aren't recognized
         if invalid_input:
@@ -385,11 +386,17 @@ class DrawModal(Modal):
         else:
             # run through mod function if any moderation values are set in config
             new_clean_negative = ''
+            mod_results = None
             if (settings.global_var.prompt_ban_list
                     or settings.global_var.prompt_ignore_list
                     or settings.global_var.negative_prompt_prefix
-                    or settings.global_var.prompt_prefix):
-                mod_results = settings.prompt_mod(self.children[0].value, self.children[1].value, apply_prompt_prefix=inherit_prompt_defaults)
+                    or settings.global_var.prompt_prefix
+                    or channel_prefix):
+                mod_results = settings.prompt_mod(
+                    self.children[0].value, self.children[1].value,
+                    apply_prompt_prefix=inherit_prompt_defaults or bool(channel_prefix),
+                    prompt_prefix_override=channel_prefix,
+                )
                 if settings.global_var.prompt_ban_list and mod_results[0] == "Stop":
                     await interaction.response.send_message(f"I'm not allowed to draw the word {mod_results[1]}!", ephemeral=True)
                     return
@@ -404,7 +411,7 @@ class DrawModal(Modal):
 
             # update the prompt again if a valid model change is requested
             if model_found:
-                pen[2] = new_token + pen[1]
+                pen[2] = new_token + (mod_results[1] if mod_results and mod_results[0] == 'Mod' else pen[1])
             # figure out what extra_net was used
             if pen[17] != 'None':
                 pen[2], pen[17], new_net_multi = settings.extra_net_check(pen[2], pen[17], net_multi)

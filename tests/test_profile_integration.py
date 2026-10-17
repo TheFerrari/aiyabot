@@ -16,7 +16,7 @@ DEFAULTS = dict(CHANNEL, negative_prompt='', data_model='Anima', style='None',
 
 
 class CommandTests(unittest.IsolatedAsyncioTestCase):
-    async def make_job(self, **kwargs):
+    async def make_job(self, channel_overrides=None, **kwargs):
         ctx = SimpleNamespace(author=SimpleNamespace(id=1, name='tester'),
                               channel=SimpleNamespace(id=2, send=AsyncMock()),
                               interaction=SimpleNamespace(response=SimpleNamespace(is_done=lambda: True)),
@@ -26,7 +26,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
             captured.append(job)
         def resolve(checkpoint, explicit, channel, mode):
             return model_profiles.resolve(fixture(), CONFIG, checkpoint, explicit, channel, mode)
-        with patch.object(settings, 'read', return_value=deepcopy(DEFAULTS)), \
+        with patch.object(settings, 'read', return_value={**deepcopy(DEFAULTS), **(channel_overrides or {})}), \
              patch.object(settings, 'check'), patch.object(settings, 'queue_check'), \
              patch.object(settings, 'messages', return_value='wait'), \
              patch.object(settings, 'check_webui_running', return_value=False), \
@@ -51,6 +51,14 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         job.model_profile['override_settings']['forge_additional_modules'].clear()
         self.assertEqual(len(job.view.input_tuple[22]['override_settings']['forge_additional_modules']), 2)
 
+    async def test_explicit_anima_channel_prefix_is_applied_without_automatic_xl_lora(self):
+        prefix = '<lora:Turbo-ANIMA-v4:0.8>'
+        job = await self.make_job(channel_overrides={'prompt_prefix': prefix})
+        self.assertEqual(job.prompt, prefix + ', a garden')
+        self.assertNotIn('xl-only', job.prompt)
+        self.assertEqual(job.view.input_tuple[2], job.prompt)
+        self.assertEqual(job.prompt.count('Turbo-ANIMA-v4'), 1)
+
     async def test_explicit_command_values_and_replay_serialization(self):
         job = await self.make_job(steps=14, guidance_scale='5,5', distilled_cfg_scale='2.5', scheduler='automatic')
         self.assertEqual(job.steps, 14)
@@ -67,16 +75,19 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(legacy.view, job.view)
 
     async def test_modal_checkpoint_switch_applies_new_architecture_defaults(self):
-        job = await self.make_job()
+        prefix = '<lora:Turbo-ANIMA-v4:0.8>'
+        job = await self.make_job(channel_overrides={'prompt_prefix': prefix})
         mapping = {'Anima': ('anima.safetensors [bbbb]', 'anima', 'bbbb', ''),
                    'XL': ('xl.safetensors [aaaa]', 'xl', 'aaaa', '')}
         interaction = SimpleNamespace(user=SimpleNamespace(id=1, name='tester', discriminator='0'),
                                       response=SimpleNamespace(send_message=AsyncMock()))
         def resolve(checkpoint, explicit, channel, mode):
             return model_profiles.resolve(fixture(), CONFIG, checkpoint, explicit, channel, mode)
-        with patch.object(settings, 'read', return_value=DEFAULTS), \
+        with patch.object(settings, 'read', return_value={**DEFAULTS, 'prompt_prefix': prefix}), \
              patch.object(settings, 'check'), patch.object(settings, 'queue_check'), \
              patch.object(settings, 'messages', return_value='wait'), \
+             patch.object(settings.global_var, 'prompt_prefix', ''), \
+             patch.object(settings.global_var, 'display_ignored_words', 'True'), \
              patch.object(settings.global_var, 'model_info', mapping), \
              patch.object(settings.global_var, 'style_names', {'None': ''}), \
              patch.object(settings.global_var, 'extra_nets', ['None']), \
@@ -86,10 +97,13 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
              patch.object(queuehandler.GlobalQueue, 'dream_thread', SimpleNamespace(is_alive=lambda: False)), \
              patch.object(queuehandler, 'process_dream', new_callable=AsyncMock) as enqueue:
             modal = viewhandler.DrawModal(job.view.input_tuple)
+            modal.children[0].value = 'a forest'
             modal.children[3].value = modal.children[3].value.replace('data_model:Anima', 'data_model:XL')
             await modal.callback(interaction)
             enqueue.assert_awaited_once()
             changed = enqueue.call_args.args[1]
+            self.assertTrue(changed.prompt.startswith(prefix + ', a forest'))
+            self.assertEqual(changed.prompt.count('Turbo-ANIMA-v4'), 1)
             self.assertEqual(changed.model_profile['architecture'], 'xl')
             self.assertEqual(changed.steps, DEFAULTS["steps"])
             self.assertEqual(changed.sampler, DEFAULTS['sampler'])
@@ -115,7 +129,8 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(draw.call_args.kwargs['distilled_cfg_scale'], '3')
 
     async def test_actual_generation_payload_contains_modules_and_hires_profile(self):
-        job = await self.make_job(width=512, height=512, highres_fix='Latent', adetailer='Faces')
+        prefix = '<lora:Turbo-ANIMA-v4:0.8>'
+        job = await self.make_job(channel_overrides={'prompt_prefix': prefix}, width=512, height=512, highres_fix='Latent', adetailer='Faces')
         session = Mock()
         session.post.return_value.json.return_value = {'images': []}
         loop = Mock()
@@ -132,6 +147,8 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         call = session.post.call_args.kwargs
         self.assertTrue(call['url'].endswith('/sdapi/v1/txt2img'))
         payload = call['json']
+        self.assertTrue(payload['prompt'].startswith(prefix + ', '))
+        self.assertEqual(payload['prompt'].count('Turbo-ANIMA-v4'), 1)
         self.assertEqual(len(payload['override_settings']['forge_additional_modules']), 2)
         self.assertNotIn('CLIP_stop_at_last_layers', payload['override_settings'])
         self.assertTrue(payload['override_settings_restore_afterwards'])

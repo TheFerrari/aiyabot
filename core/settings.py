@@ -161,9 +161,10 @@ def batch_format(batch_string):
     return count, size, values_given
 
 
-def prompt_mod(prompt, negative_prompt, apply_prompt_prefix=True):
+def prompt_mod(prompt, negative_prompt, apply_prompt_prefix=True, prompt_prefix_override=None):
     clean_negative_prompt = negative_prompt
-    prompt_prefix = global_var.prompt_prefix if apply_prompt_prefix else ""
+    prefix = global_var.prompt_prefix if prompt_prefix_override is None else prompt_prefix_override
+    prompt_prefix = prefix.strip() if apply_prompt_prefix else ""
     #print(f'Prompt modification. Prompt_prefix = {prompt_prefix}')    
     # if any banned words are in prompt, return immediately
     if global_var.prompt_ban_list:
@@ -172,7 +173,7 @@ def prompt_mod(prompt, negative_prompt, apply_prompt_prefix=True):
             if x in prompt.lower():
                 return "Stop", x    
     # otherwise mod the prompt/negative prompt
-    if global_var.prompt_ignore_list or global_var.negative_prompt_prefix or global_var.prompt_prefix:
+    if global_var.prompt_ignore_list or global_var.negative_prompt_prefix or prompt_prefix:
         for y in global_var.prompt_ignore_list:
             y = str(y.lower())
             if y in prompt.lower():
@@ -187,7 +188,7 @@ def prompt_mod(prompt, negative_prompt, apply_prompt_prefix=True):
             else:
                 negative_prompt = f"{z} {negative_prompt}"        
         # add prompt_prefix to the prompt
-        if prompt_prefix and not prompt.lower().startswith(prompt_prefix):
+        if prompt_prefix and not prompt.casefold().startswith(prompt_prefix.casefold()):
             prompt = f"{prompt_prefix}, {prompt}"
             #print(f'Prompt après modification. Prompt = {prompt}')        
         return "Mod", prompt.strip(), negative_prompt.strip(), clean_negative_prompt.strip()    

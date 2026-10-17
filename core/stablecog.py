@@ -866,11 +866,19 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         # run through mod function if any moderation values are set in config
         # (ban list, ignore list, negative prefix, or prompt prefix)
         clean_negative = negative_prompt
+        channel_prefix = channel_defaults.get('prompt_prefix')
         if (settings.global_var.prompt_ban_list
                 or settings.global_var.prompt_ignore_list
                 or settings.global_var.negative_prompt_prefix
-                or settings.global_var.prompt_prefix):
-            mod_results = settings.prompt_mod(simple_prompt, negative_prompt, apply_prompt_prefix=inherit_prompt_defaults)
+                or settings.global_var.prompt_prefix
+                or channel_prefix):
+            # An explicit channel prefix is user input, independent of whether
+            # this architecture inherits automatic XL LoRAs/styles.
+            mod_results = settings.prompt_mod(
+                simple_prompt, negative_prompt,
+                apply_prompt_prefix=inherit_prompt_defaults or bool(channel_prefix),
+                prompt_prefix_override=channel_prefix,
+            )
             if mod_results[0] == "Stop":
                 blocked_message = f"I'm not allowed to draw the word {mod_results[1]}!"
                 if is_interaction_context and ctx.interaction.response.is_done():
