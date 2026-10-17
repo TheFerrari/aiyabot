@@ -27,7 +27,7 @@ def fixture():
             {'filename': '/srv/VAE/qwen.safetensors', 'model_name': 'qwen.safetensors'},
             {'filename': '/srv/text_encoder/qwen.safetensors', 'model_name': 'qwen.safetensors'},
         ],
-        'samplers': [{'name': 'ER SDE'}, {'name': 'Euler a'}],
+        'samplers': [{'name': 'ER SDE'}, {'name': 'Euler a'}, {'name': 'LCM'}],
         'schedulers': [{'name': 'Beta'}, {'name': 'Automatic'}],
     }
 
@@ -78,6 +78,38 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(len(second['override_settings']['forge_additional_modules']), 2)
         self.assertNotIn('anima_do_reference', third['override_settings'])
         self.assertEqual(profiles.generation_settings(second)['override_settings_restore_afterwards'], True)
+
+    def test_legacy_xl_channel_values_precede_forge(self):
+        result = self.resolve(checkpoint='xl')
+        for name in profiles.PARAMETERS:
+            self.assertEqual(result['parameters'][name], CHANNEL[name])
+        self.assertEqual(result['hires']['hr_second_pass_steps'], CHANNEL['steps'])
+
+    def test_channel_anima_profile_precedes_model_and_forge_but_not_command(self):
+        channel = deepcopy(CHANNEL)
+        channel['generation_profiles'] = {'anima': {'steps': 40, 'sampler': 'Euler a',
+            'scheduler': 'Automatic', 'guidance_scale': 6, 'distilled_cfg_scale': 5}}
+        config = deepcopy(CONFIG)
+        config['models']['anima']['parameters'] = {'steps': 45}
+        config['models']['anima']['hires'] = {'hr_second_pass_steps': 48}
+        result = self.resolve(channel=channel, config=config)
+        self.assertEqual(result['parameters']['steps'], 40)
+        self.assertEqual(result['parameters']['sampler'], 'Euler a')
+        self.assertEqual(result['parameters']['scheduler'], 'Automatic')
+        self.assertEqual(result['parameters']['distilled_cfg_scale'], 5)
+        self.assertEqual(result['hires'], {'hr_second_pass_steps': 40, 'hr_cfg': 6, 'hr_distilled_cfg': 5})
+        explicit = self.resolve(channel=channel, config=config, explicit={'steps': 12})
+        self.assertEqual(explicit['parameters']['steps'], 12)
+        self.assertEqual(explicit['hires']['hr_second_pass_steps'], 12)
+        self.assertEqual(explicit['parameter_sources']['steps'], 'command')
+        self.assertEqual(self.resolve(checkpoint='xl', channel=channel)['parameters']['steps'], CHANNEL['steps'])
+
+    def test_reset_masks_legacy_xl_values(self):
+        channel = deepcopy(CHANNEL)
+        channel['generation_profiles'] = {'xl': dict.fromkeys(profiles.PARAMETERS)}
+        result = self.resolve(checkpoint='xl', channel=channel)
+        self.assertEqual(result['parameters']['steps'], 24)
+        self.assertEqual(result['parameters']['sampler'], 'Euler a')
 
     def test_module_validation_missing_and_ambiguous(self):
         data = fixture()

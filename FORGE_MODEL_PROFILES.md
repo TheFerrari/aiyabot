@@ -51,8 +51,11 @@ Una ruta completa ausente se rechaza; no se sustituye por otro módulo.
 
 ## Parámetros y repetición
 
-La prioridad es: argumento explícito de `/draw`, ajuste del checkpoint,
-preset de Forge, valor del canal. Se respetan los límites de pasos del canal:
+La prioridad es: argumento explícito de `/draw`, ajuste del canal para esa
+arquitectura, ajuste del checkpoint y, finalmente, preset de Forge como respaldo.
+Los valores existentes de steps, sampler, scheduler, CFG y Shift del canal se
+respetan para XL. No se transfieren automáticamente a Anima, que tiene su propio
+perfil por canal. Las dimensiones existentes se comparten como punto de partida. Se respetan los límites de pasos del canal:
 si `max_steps` es 28, un preset de 32 pasos se limita a 28. Las dimensiones
 `0` del preset conservan las del canal. Las dimensiones deben ser múltiplos de
 64, y el tamaño final de hires se redondea a ese múltiplo.
@@ -60,8 +63,37 @@ si `max_steps` es 28, un preset de 32 pasos se limita a 28. Las dimensiones
 Para Anima, `distilled_cfg_scale` representa **Shift**. El preset instalado
 usa ER SDE / Beta, 32 pasos, CFG 4 y Shift 3. Se consultan por separado los
 valores `anima_t2i_*`, `anima_i2i_*` y `anima_t2i_hr_*`. Un argumento explícito
-de pasos, CFG o Shift también se aplica a hires, salvo que `hires` tenga un
-ajuste específico en el perfil del checkpoint.
+de pasos, CFG o Shift también se aplica a hires. Los valores guardados en el
+perfil del canal también prevalecen sobre los valores de hires del checkpoint
+y de Forge.
+
+### Ajustes avanzados desde Discord
+
+No hace falta editar los presets de la interfaz de Forge. Ejemplos:
+
+```text
+/settings parameter_profile:xl steps:8 sampler:LCM scheduler:Automatic guidance_scale:1
+/settings parameter_profile:anima steps:28 sampler:Euler scheduler:Normal guidance_scale:5 distilled_cfg_scale:3
+/settings parameter_profile:anima current_settings:true
+/settings parameter_profile:anima reset_profile:true
+```
+
+`parameter_profile` acepta `xl`, `anima` o `current` (predeterminado). Con
+`current`, se edita la arquitectura del modelo predeterminado del canal, o del
+nuevo `data_model` indicado en el mismo comando. Por ejemplo, si ese modelo es
+Anima, `/settings steps:28` modifica únicamente el perfil Anima del canal.
+
+`reset_profile:true` elimina las personalizaciones de muestreo de ese perfil y
+vuelve a los valores automáticos del checkpoint / Forge. Puede combinarse con
+otros argumentos para restablecer y personalizar en un mismo comando. Los
+límites `max_steps` y `max_batch` siguen siendo políticas comunes del canal.
+`/draw steps:... sampler:... scheduler:...` siempre prevalece para esa petición.
+
+Los cambios se guardan en `generation_profiles` dentro del JSON del canal;
+no se cambia la configuración de otros canales ni los presets del servidor de
+Forge. Para mantener compatibilidad, los ajustes XL también actualizan las
+claves históricas del canal. No se sobrescriben los archivos de canales
+existentes durante el despliegue.
 
 Cada tarea guarda una copia del perfil resuelto. Los botones de semilla,
 regeneración y variantes conservan ese perfil sin volver a consultar los
@@ -137,5 +169,8 @@ Las opciones de checkpoint, módulos, dtype, preset y referencia Anima se
 restauraron después de las seis peticiones. Se revisaron visualmente las
 imágenes Anima y se comprobaron sus metadatos. Estas peticiones validan Forge;
 las pruebas automatizadas con mocks validan la integración del comando y la
-cola sin publicar mensajes en Discord. El servicio del bot mantiene su versión
-anterior hasta que se despliegue esta rama y se reinicie.
+cola sin publicar mensajes en Discord. La corrección de prioridades añade
+pruebas de `/settings` con archivos temporales, aislamiento entre canales y
+arquitecturas, restablecimiento y prioridad sobre hires. Se comprobó además que
+los parámetros guardados de los 16 canales existentes prevalecen al resolver XL,
+sin modificar sus archivos.

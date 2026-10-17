@@ -134,8 +134,23 @@ def numeric(name, value, integer=False, positive=False):
         raise ProfileError(f'Invalid {name}: {value}') from None
 
 
+def channel_parameters(channel, architecture):
+    """Legacy channel sampling values belong to XL; dimensions are shared.
+
+    An explicit null in an architecture profile means 'use automatic defaults'
+    and masks legacy values without deleting the channel's historical settings.
+    """
+    keys = PARAMETERS if architecture == 'xl' else ('width', 'height')
+    values = {name: channel[name] for name in keys if name in channel}
+    overrides = channel.get('generation_profiles', {}).get(architecture, {})
+    if not isinstance(overrides, dict):
+        raise ProfileError(f'Invalid channel profile: {architecture}')
+    values.update({name: value for name, value in overrides.items() if name in PARAMETERS})
+    return values
+
+
 def resolve(catalog_data, config, checkpoint, explicit, channel, mode='t2i'):
-    """Precedence: explicit command > model overrides > Forge preset > channel.
+    """Precedence: command > channel architecture > model > Forge defaults.
 
     A zero dimension in Forge means "leave unchanged", just as in its GUI.
     Always use the requested checkpoint; forge_checkpoint_<arch> is UI history.
@@ -170,18 +185,26 @@ def resolve(catalog_data, config, checkpoint, explicit, channel, mode='t2i'):
     if arch == 'anima' and len(modules) < 2:
         raise ProfileError('Configure the Anima text encoder and VAE in Forge or model_profiles.json')
 
+    channel_values = channel_parameters(channel, arch)
     params = {}
+    sources = {}
     for name, suffix in PARAMETERS.items():
         value = explicit.get(name)
+        source = 'command'
         if value is None:
-            value = entry.get('parameters', {}).get(name)
+            value, source = channel_values.get(name), 'channel'
+        if value is None:
+            value, source = entry.get('parameters', {}).get(name), 'model'
         if value is None:
             value = options.get(f'{arch}_{mode}_{suffix}', FALLBACKS[arch].get(name))
+            source = 'forge'
             # Zero means 'do not change this UI value' in Forge's preset handler.
             if name not in {'sampler', 'scheduler'} and value is not None and numeric(name, value) == 0:
                 value = channel.get(name)
+                source = 'channel_fallback'
         if value is None:
             value = channel.get(name)
+            source = 'channel_fallback'
         if name in {'sampler', 'scheduler'}:
             choices = catalog_data[name + 's']
             names = [c['name'] if isinstance(c, dict) else c for c in choices]
@@ -193,6 +216,7 @@ def resolve(catalog_data, config, checkpoint, explicit, channel, mode='t2i'):
             value = numeric(name, value, integer=name in {'steps', 'width', 'height'},
                             positive=name in {'steps', 'width', 'height'})
         params[name] = value
+        sources[name] = source
     max_steps = channel.get('max_steps')
     if max_steps:
         params['steps'] = min(params['steps'], int(max_steps))
@@ -204,8 +228,8 @@ def resolve(catalog_data, config, checkpoint, explicit, channel, mode='t2i'):
                                     ('hr_cfg', 'cfg', 'guidance_scale'),
                                     ('hr_distilled_cfg', 'dcfg', 'distilled_cfg_scale')]:
         value = entry.get('hires', {}).get(target, options.get(f'{arch}_t2i_hr_{suffix}'))
-        # Explicit base values also apply to hires, unless the profile customizes it.
-        if explicit.get(source) is not None and target not in entry.get('hires', {}):
+        # A user-configured base value also applies to the second pass.
+        if explicit.get(source) is not None or channel_values.get(source) is not None:
             value = params[source]
         if value is None or numeric(target, value) == 0:
             value = params[source]
@@ -214,7 +238,7 @@ def resolve(catalog_data, config, checkpoint, explicit, channel, mode='t2i'):
         hires['hr_second_pass_steps'] = min(hires['hr_second_pass_steps'], int(max_steps))
     return {
         'architecture': arch, 'checkpoint': checkpoint, 'mode': mode,
-        'parameters': params, 'hires': hires,
+        'parameters': params, 'parameter_sources': sources, 'hires': hires,
         'inherit_prompt_defaults': entry.get('inherit_prompt_defaults', arch == 'xl'),
         'override_settings': {
             'sd_model_checkpoint': checkpoint,
@@ -254,5 +278,7 @@ def update_snapshot(profile, values):
                       'distilled_cfg_scale': 'hr_distilled_cfg'}.get(name)
             if target:
                 profile['hires'][target] = value
+            if 'parameter_sources' in profile:
+                profile['parameter_sources'][name] = 'edit'
         profile['parameters'][name] = value
     return profile

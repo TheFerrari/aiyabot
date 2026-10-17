@@ -91,8 +91,8 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
             enqueue.assert_awaited_once()
             changed = enqueue.call_args.args[1]
             self.assertEqual(changed.model_profile['architecture'], 'xl')
-            self.assertEqual(changed.steps, 24)
-            self.assertEqual(changed.sampler, 'Euler a')
+            self.assertEqual(changed.steps, DEFAULTS["steps"])
+            self.assertEqual(changed.sampler, DEFAULTS['sampler'])
             self.assertEqual(changed.model_profile['override_settings']['forge_additional_modules'], [])
 
     async def test_meta_button_preserves_anima_sampling_fields(self):

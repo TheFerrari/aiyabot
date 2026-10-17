@@ -4,6 +4,7 @@ from discord.ext import commands
 from typing import Optional
 
 from core import settings
+from core import model_profiles
 from core import autocomplete as ac
 
 
@@ -56,7 +57,7 @@ class SettingsCog(commands.Cog):
                     seen_none = True
             elif lora_name not in unique_loras:
                 unique_loras.append(lora_name)
-        
+
         return unique_loras
 
     def extra_net_autocomplete(self: discord.AutocompleteContext):
@@ -75,7 +76,7 @@ class SettingsCog(commands.Cog):
                     seen_none = True
             elif net not in unique_nets:
                 unique_nets.append(net)
-        
+
         return unique_nets
 
     def upscaler_autocomplete(self: discord.AutocompleteContext):
@@ -109,17 +110,32 @@ class SettingsCog(commands.Cog):
 
     @commands.slash_command(name='settings', description='Review and change channel defaults')
     @option(
+        'parameter_profile', str,
+        description='Sampling defaults to edit: current model, XL or Anima.',
+        choices=['current', 'xl', 'anima'], required=False,
+    )
+    @option(
+        'reset_profile', bool,
+        description='Restore automatic sampling defaults for the selected profile.',
+        required=False,
+    )
+    @option(
+        'distilled_cfg_scale', str,
+        description='Default Shift for Anima, or distilled CFG scale for other models.',
+        required=False,
+    )
+    @option(
         'current_settings',
         bool,
         description='Show the current defaults for the channel.',
         required=False,
     )
     @option(
-        'prompt_prefix', 
-        str, 
-        description='Add a prefix to the prompt for image generation.', 
+        'prompt_prefix',
+        str,
+        description='Add a prefix to the prompt for image generation.',
         required=False
-    )    
+    )
     @option(
         'n_prompt',
         str,
@@ -258,6 +274,9 @@ class SettingsCog(commands.Cog):
 
     async def settings_handler(self, ctx,
                                current_settings: Optional[bool] = True,
+                               parameter_profile: Optional[str] = "current",
+                               reset_profile: Optional[bool] = False,
+                               distilled_cfg_scale: Optional[str] = None,
                                prompt_prefix: Optional[str] = None,
                                n_prompt: Optional[str] = None,
                                data_model: Optional[str] = None,
@@ -283,29 +302,75 @@ class SettingsCog(commands.Cog):
         #if not any(role.name == 'Moderator' for role in ctx.author.roles):
         #    await ctx.send_response('Sorry, you need the "Moderator" Role to use the settings command (:', ephemeral=True)
         #    return
-            
+
         # get the channel id and check if a settings file exists
         channel = '% s' % ctx.channel.id
         settings.check(channel)
         reviewer = settings.read(channel)
+        architecture = parameter_profile or 'current'
+        if architecture == 'current':
+            checkpoint = data_model if data_model is not None else reviewer.get('data_model', '')
+            checkpoint = settings.global_var.model_info.get(checkpoint, (checkpoint,))[0]
+            try:
+                architecture = model_profiles.model_config(model_profiles.load_config(), checkpoint)['architecture']
+            except model_profiles.ProfileError as exc:
+                await ctx.send_response(f'Cannot read model profiles: {exc}', ephemeral=True)
+                return
+        if architecture not in model_profiles.FALLBACKS:
+            await ctx.send_response('Choose xl or anima for parameter_profile.', ephemeral=True)
+            return
+        try:
+            if distilled_cfg_scale is not None:
+                distilled_cfg_scale = model_profiles.numeric('distilled_cfg_scale', distilled_cfg_scale)
+            if guidance_scale is not None:
+                guidance_scale = model_profiles.numeric('guidance_scale', guidance_scale)
+        except model_profiles.ProfileError as exc:
+            await ctx.send_response(str(exc), ephemeral=True)
+            return
+        if reset_profile:
+            settings.update_generation_profile(channel, architecture, {}, reset=True)
+
+        def save_parameter(name, value):
+            settings.update_generation_profile(channel, architecture, {name: value})
+
         # create the embed for the reply
-        embed = discord.Embed(title="Channel Defaults Summary", description="")
+        embed = discord.Embed(title="Channel Defaults Summary", description=f"Sampling profile: **{architecture}**. Explicit /draw values take priority.")
         embed.set_footer(text=f'Channel id: {channel}')
         embed.colour = settings.global_var.embed_color
         current, new, new_n_prompt = '', '', ''
         dummy_prompt, lora_multi, hyper_multi = '', 0.85, 0.85
-        set_new = False
+        set_new = bool(reset_profile)
+        if reset_profile:
+            new += f'\nAutomatic sampling defaults restored for ``{architecture}``.'
+        if distilled_cfg_scale is not None:
+            save_parameter('distilled_cfg_scale', distilled_cfg_scale)
+            new += f'\n{model_profiles.shift_label({"architecture": architecture})}: ``{distilled_cfg_scale}``'
+            set_new = True
 
         if current_settings:
             cur_set = settings.read(channel)
+            profile_values = model_profiles.channel_parameters(cur_set, architecture)
+            for key in model_profiles.PARAMETERS:
+                cur_set[key] = profile_values.get(key)
             for key, value in cur_set.items():
-                if key == 'negative_prompt':
+                if key in {'negative_prompt', 'generation_profiles'}:
                     pass
                 else:
+                    if value is None:
+                        value = 'Automatic (model / Forge)'
                     if value == '':
                         value = ' '
                     current += f'\n{key} - ``{value}``'
-            embed.add_field(name=f'Current parameters', value=current, inline=True)
+            # Discord limits each field to 1024 characters.
+            chunks = []
+            for line in current.splitlines():
+                if not chunks or len(chunks[-1]) + len(line) + 1 > 1024:
+                    chunks.append(line)
+                else:
+                    chunks[-1] += '\n' + line
+            for chunk in chunks:
+                if chunk:
+                    embed.add_field(name=f'Current parameters ({architecture})', value=chunk, inline=True)
             # put negative prompt on new field for hosts who like massive negative prompts
             cur_n_prompt = f'{cur_set["negative_prompt"]}'
             if cur_n_prompt == '':
@@ -353,37 +418,32 @@ class SettingsCog(commands.Cog):
             new += f'\nMax steps: ``{max_steps}``'
             # automatically lower default steps if max steps goes below it
             if max_steps < reviewer['steps']:
-                settings.update(channel, 'steps', max_steps)
+                save_parameter('steps', max_steps)
                 new += f'\nDefault steps is too high! Lowering to ``{max_steps}``.'
             set_new = True
 
         if width is not None:
-            settings.update(channel, 'width', width)
+            save_parameter('width', width)
             new += f'\nWidth: ``"{width}"``'
             set_new = True
 
         if height is not None:
-            settings.update(channel, 'height', height)
+            save_parameter('height', height)
             new += f'\nHeight: ``"{height}"``'
             set_new = True
 
         if guidance_scale is not None:
-            try:
-                float(guidance_scale)
-                settings.update(channel, 'guidance_scale', guidance_scale)
-                new += f'\nGuidance Scale: ``{guidance_scale}``'
-            except(Exception,):
-                settings.update(channel, 'guidance_scale', '7.0')
-                new += f'\nHad trouble setting Guidance Scale! Setting to default of `7.0`.'
+            save_parameter('guidance_scale', guidance_scale)
+            new += f'\nGuidance Scale: ``{guidance_scale}``'
             set_new = True
 
         if sampler is not None:
-            settings.update(channel, 'sampler', sampler)
+            save_parameter('sampler', sampler)
             new += f'\nSampler: ``"{sampler}"``'
             set_new = True
 
         if scheduler is not None:
-            settings.update(channel, 'scheduler', scheduler)
+            save_parameter('scheduler', scheduler)
             new += f'\nScheduler: ``"{scheduler}"``'
             set_new = True
 
@@ -462,7 +522,7 @@ class SettingsCog(commands.Cog):
             if steps > reviewer['max_steps']:
                 new += f"\nMax steps is ``{reviewer['max_steps']}``! You can't go beyond it!"
             else:
-                settings.update(channel, 'steps', steps)
+                save_parameter('steps', steps)
                 new += f'\nSteps: ``{steps}``'
             set_new = True
 

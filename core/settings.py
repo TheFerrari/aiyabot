@@ -377,6 +377,24 @@ def update(channel_id: str, sett: str, value):
         json.dump(settings, configfile, indent=1)
 
 
+def update_generation_profile(channel_id, architecture, values, reset=False):
+    """Persist sampling overrides independently for each channel/architecture."""
+    from core.model_profiles import PARAMETERS, FALLBACKS
+    if architecture not in FALLBACKS or set(values) - PARAMETERS.keys():
+        raise ValueError('Invalid generation profile')
+    with open(path + str(channel_id) + '.json', 'r') as configfile:
+        channel = json.load(configfile)
+    profiles = channel.setdefault('generation_profiles', {})
+    if reset:
+        profiles[architecture] = dict.fromkeys(PARAMETERS)
+    profiles.setdefault(architecture, {}).update(values)
+    # Keep legacy readers and other explicitly configured backends compatible.
+    if architecture == 'xl':
+        channel.update(values)
+    with open(path + str(channel_id) + '.json', 'w') as configfile:
+        json.dump(channel, configfile, indent=1)
+
+
 def _env_truthy(value: str) -> bool:
     return str(value).strip().lower() in {"true", "1", "t", "yes", "y", "on"}
 
