@@ -67,6 +67,13 @@ de pasos, CFG o Shift también se aplica a hires. Los valores guardados en el
 perfil del canal también prevalecen sobre los valores de hires del checkpoint
 y de Forge.
 
+Al enviar una petición Anima a Forge, `Automatic` (incluido el nombre API
+`automatic`) se resuelve a `Normal` en la pasada base y en hires. Esto evita
+la ruta de sigmas heredada de Forge Neo que puede producir `NaN in Latent`
+e imágenes negras en hires. También se aplica a los perfiles guardados de
+imágenes antiguas. Los demás schedulers, CFG, Shift, pasos y LoRAs se conservan;
+no es necesario desactivar hires ni aumentar CFG 1 para usar Anima Turbo.
+
 ### Ajustes avanzados desde Discord
 
 No hace falta editar los presets de la interfaz de Forge. Ejemplos:

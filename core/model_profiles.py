@@ -257,6 +257,18 @@ def generation_settings(profile):
     }
 
 
+def backend_scheduler(scheduler, profile=None):
+    """Resolve Automatic before Forge's case-sensitive hires sampling path.
+
+    The API exposes the name 'automatic', but only the label 'Automatic'
+    triggers Forge's model-aware fallback. Old replay snapshots can contain
+    either spelling. Anima needs Normal rather than the legacy sigma schedule.
+    """
+    if str(scheduler).strip().casefold() == 'automatic':
+        return 'Normal' if profile and profile['architecture'] == 'anima' else 'Automatic'
+    return scheduler
+
+
 def shift_label(profile):
     return 'Shift' if profile and profile['architecture'] == 'anima' else 'Distilled CFG Scale'
 

@@ -141,6 +141,15 @@ class ProfileTests(unittest.TestCase):
         payload['override_settings']['forge_additional_modules'].clear()
         self.assertEqual(len(replay['override_settings']['forge_additional_modules']), 2)
 
+    def test_backend_scheduler_resolves_automatic_without_changing_other_schedules(self):
+        for value in ('automatic', 'Automatic', 'AUTOMATIC'):
+            with self.subTest(value=value):
+                self.assertEqual(profiles.backend_scheduler(value, {'architecture': 'anima'}), 'Normal')
+                self.assertEqual(profiles.backend_scheduler(value, {'architecture': 'xl'}), 'Automatic')
+                self.assertEqual(profiles.backend_scheduler(value), 'Automatic')
+        for value in ('Beta', 'beta', 'Normal', 'normal', 'Karras'):
+            self.assertEqual(profiles.backend_scheduler(value, {'architecture': 'anima'}), value)
+
     def test_zero_preset_values_leave_channel_values_and_bad_hires_reports_error(self):
         data = fixture()
         data['options']['anima_t2i_step'] = 0

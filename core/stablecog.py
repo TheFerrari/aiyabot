@@ -1395,6 +1395,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             elif isinstance(queue_object.styles, (list, tuple, set)):
                 styles_payload = [str(s).strip() for s in queue_object.styles if str(s).strip()]
 
+            # Normalize at dispatch so old replays also avoid Anima's NaN-prone
+            # lowercase 'automatic' hires path, while preserving Turbo CFG/LoRAs.
+            scheduler = model_profiles.backend_scheduler(queue_object.scheduler, model_profile)
             payload = {
                 "prompt": queue_object.prompt,
                 "negative_prompt": queue_object.negative_prompt,
@@ -1404,7 +1407,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 "cfg_scale": queue_object.guidance_scale,
                 "distilled_cfg_scale": queue_object.distilled_cfg_scale,
                 "sampler_name": queue_object.sampler,
-                "scheduler": queue_object.scheduler,
+                "scheduler": scheduler,
                 "seed": queue_object.seed,
                 "seed_resize_from_h": -1,
                 "seed_resize_from_w": -1,
@@ -1467,7 +1470,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 if queue_object.highres_fix != 'Disabled':
                     payload.update(model_profile['hires'])
                     payload['hr_sampler_name'] = queue_object.sampler
-                    payload['hr_scheduler'] = queue_object.scheduler
+                    payload['hr_scheduler'] = scheduler
                     # Forge defaults to a 64 pixel resolution step.
                     for dim in ('width', 'height'):
                         rounded = max(64, round(getattr(queue_object, dim) / 64) * 64)

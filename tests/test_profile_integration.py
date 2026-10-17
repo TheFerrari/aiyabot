@@ -128,9 +128,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(draw.call_args.kwargs['scheduler'], 'Beta')
         self.assertEqual(draw.call_args.kwargs['distilled_cfg_scale'], '3')
 
-    async def test_actual_generation_payload_contains_modules_and_hires_profile(self):
-        prefix = '<lora:Turbo-ANIMA-v4:0.8>'
-        job = await self.make_job(channel_overrides={'prompt_prefix': prefix}, width=512, height=512, highres_fix='Latent', adetailer='Faces')
+    def generation_payload(self, job):
         session = Mock()
         session.post.return_value.json.return_value = {'images': []}
         loop = Mock()
@@ -146,7 +144,12 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.post.call_count, 1)
         call = session.post.call_args.kwargs
         self.assertTrue(call['url'].endswith('/sdapi/v1/txt2img'))
-        payload = call['json']
+        return call['json']
+
+    async def test_actual_generation_payload_contains_modules_and_hires_profile(self):
+        prefix = '<lora:Turbo-ANIMA-v4:0.8>'
+        job = await self.make_job(channel_overrides={'prompt_prefix': prefix}, width=512, height=512, highres_fix='Latent', adetailer='Faces')
+        payload = self.generation_payload(job)
         self.assertTrue(payload['prompt'].startswith(prefix + ', '))
         self.assertEqual(payload['prompt'].count('Turbo-ANIMA-v4'), 1)
         self.assertEqual(len(payload['override_settings']['forge_additional_modules']), 2)
@@ -156,6 +159,27 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload['hr_second_pass_steps'], 16)
         self.assertEqual(payload['hr_resize_x'] % 64, 0)
         self.assertIn('ADetailer', payload['alwayson_scripts'])
+
+    async def test_anima_automatic_hires_replays_keep_turbo_cfg_and_use_normal(self):
+        prefix = '<lora:Turbo-ANIMA-v4:1>'
+        for scheduler in ('automatic', 'Automatic'):
+            with self.subTest(scheduler=scheduler):
+                job = await self.make_job(channel_overrides={'prompt_prefix': prefix},
+                                          steps=10, guidance_scale='1', distilled_cfg_scale='3',
+                                          sampler='Euler a', highres_fix='Latent', scheduler='Automatic')
+                # Simulate saved jobs and modal edits that bypass profile resolution.
+                job.scheduler = scheduler
+                job.model_profile['parameters']['scheduler'] = scheduler
+                payload = self.generation_payload(job)
+                self.assertTrue(payload['enable_hr'])
+                self.assertEqual(payload['scheduler'], 'Normal')
+                self.assertEqual(payload['hr_scheduler'], 'Normal')
+                self.assertEqual(payload['cfg_scale'], 1)
+                self.assertEqual(payload['hr_cfg'], 1)
+                self.assertEqual(payload['hr_distilled_cfg'], 3)
+                self.assertEqual(payload['hr_second_pass_steps'], 10)
+                self.assertIn(prefix, payload['prompt'])
+                self.assertEqual(job.model_profile['parameters']['scheduler'], scheduler)
 
 
 class BackendTests(unittest.TestCase):
