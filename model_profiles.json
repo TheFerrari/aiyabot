@@ -1,0 +1,8 @@
+{
+  "default_architecture": "xl",
+  "models": {
+    "anima_baseV10_txt": {
+      "architecture": "anima"
+    }
+  }
+}

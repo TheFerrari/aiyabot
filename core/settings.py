@@ -112,6 +112,7 @@ class GlobalVar:
     api_user: Optional[str] = None
     api_pass: Optional[str] = None
     model_info = {}
+    forge_available = False
     size_range = range(192, 2048, 1)
     size_range_exceed = 2048
     sampler_names = []
@@ -160,9 +161,9 @@ def batch_format(batch_string):
     return count, size, values_given
 
 
-def prompt_mod(prompt, negative_prompt):
+def prompt_mod(prompt, negative_prompt, apply_prompt_prefix=True):
     clean_negative_prompt = negative_prompt
-    prompt_prefix = global_var.prompt_prefix
+    prompt_prefix = global_var.prompt_prefix if apply_prompt_prefix else ""
     #print(f'Prompt modification. Prompt_prefix = {prompt_prefix}')    
     # if any banned words are in prompt, return immediately
     if global_var.prompt_ban_list:
@@ -826,6 +827,14 @@ def populate_global_vars():
     if 'SwinIR_4x' in global_var.upscaler_names:
         template['upscaler_1'] = 'SwinIR_4x'
 
+    from core import model_profiles
+    try:
+        if os.getenv('AIYA_SD_BACKEND', '').lower() not in {'automatic', 'auto', 'a1111', 'auto1111', 'sdnext', 'sd_next', 'next'}:
+            forge_data = model_profiles.catalog.read(s, global_var.url, force=True)
+            global_var.forge_available = forge_data is not None
+    except model_profiles.ProfileError as exc:
+        logger.warning("Could not refresh Forge presets: %s", exc)
+
     # create nested dict for models based on display_name in models.csv
     # model_info[0] = display name (top level)
     # model_info[1][0] = "title". this is sent to the API
@@ -848,6 +857,15 @@ def populate_global_vars():
                         global_var.model_info[row[0]] = model['title'], model['model_name'], model['hash'], row[2]
                         matched_api_models.add(model['model_name'])
                         break
+        profile_config = model_profiles.load_config()
+        for model in api_models:
+            if any(model_profiles.model_key(name) == model_profiles.model_key(model['title'])
+                   for name in profile_config['models']):
+                if model['model_name'] not in matched_api_models:
+                    global_var.model_info[model['model_name']] = (
+                        model['title'], model['model_name'], model['hash'], '',
+                    )
+                    matched_api_models.add(model['model_name'])
         # add "Default" if models.csv is on default, or if no model matches are found
         if not global_var.model_info:
             global_var.model_info[row[0]] = '', '', '', ''

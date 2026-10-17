@@ -10,14 +10,17 @@ from discord.ui import Button, View
 
 from core import settings
 from core.stablecog import StableCog
+from core.model_profiles import model_key
 
 
 # Define a View for the metadata buttons
 class MetaView(ui.View):
-    def __init__(self, ctx, metadata_raw, prompt, negative_prompt, steps, sampler, cfg_scale, seed, size, clip_skip, data_model):
+    def __init__(self, ctx, metadata_raw, prompt, negative_prompt, steps, sampler, cfg_scale, seed, size, clip_skip, data_model, scheduler=None, distilled_cfg_scale=None):
         super().__init__(timeout=None)
 
         self.ctx = ctx
+        self.scheduler = scheduler if scheduler != 'N/A' else None
+        self.distilled_cfg_scale = distilled_cfg_scale if distilled_cfg_scale != 'N/A' else None
         self.metadata_raw = metadata_raw
         self.prompt = prompt if prompt != "N/A" else None
         self.negative_prompt = negative_prompt if negative_prompt != "N/A" else None
@@ -55,6 +58,10 @@ class MetaView(ui.View):
                 dream_args['guidance_scale'] = self.cfg_scale
             if self.sampler is not None:
                 dream_args['sampler'] = self.sampler
+            if self.scheduler is not None:
+                dream_args['scheduler'] = self.scheduler
+            if self.distilled_cfg_scale is not None:
+                dream_args['distilled_cfg_scale'] = self.distilled_cfg_scale
             if self.seed is not None:
                 dream_args['seed'] = self.seed
             if self.clip_skip is not None:
@@ -63,18 +70,22 @@ class MetaView(ui.View):
             #dream_args['styles'] = "Yume Style"
 
             # Model selection
-            if self.data_model is not None and (self.data_model.lower().startswith("zavychromaxl") or self.data_model.lower().startswith("zavyyumexl")):
+            if self.data_model is not None:
                 dream_args['data_model'] = self.data_model
 
             # Using **dream_args unpacks the dictionary into keyword arguments for the function
             self.ctx.called_from_button = True
-            await StableCog.dream_handler(self.ctx, **dream_args)
+            cog = interaction.client.get_cog('Stable Diffusion')
+            if cog is None:
+                await interaction.followup.send('The image generation command is unavailable.', ephemeral=True)
+                return
+            await StableCog.dream_handler.callback(cog, self.ctx, **dream_args)
             await interaction.edit_original_response(view=self)
         except Exception as e:
             print(f'The Draw from Meta button broke: {str(e)}')
             self.disabled = True
             await interaction.response.edit_message(view=self)
-            await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)    
+            await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
 
     # Batch selection button
     @discord.ui.button(
@@ -101,8 +112,8 @@ class MetaView(ui.View):
 
             # Create the Embed and mention the user who triggered the interaction in the description
             embed = Embed(
-                title="──── Generation Datas────", 
-                description=f"```\nPrompt: {metadata_cleaned}\n```", 
+                title="──── Generation Datas────",
+                description=f"```\nPrompt: {metadata_cleaned}\n```",
                 color=random.randint(0, 0xFFFFFF)
             )
             delete_view = DeleteView()
@@ -111,7 +122,7 @@ class MetaView(ui.View):
             print(f'The Copy Generation Datas button broke: {str(e)}')
             self.disabled = True
             await interaction.response.edit_message(view=self)
-            await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)  
+            await interaction.followup.send("I may have been restarted. This button no longer works.", ephemeral=True)
 
     # Define a button for deleting the metadata message
     @discord.ui.button(
@@ -227,7 +238,13 @@ class MetaCog(commands.Cog):
             seed = extracted_metadata['Seed']
             size = extracted_metadata['Size']
             clip_skip = extracted_metadata['Clip skip']
-            data_model = extracted_metadata['Model']  
+            data_model = extracted_metadata['Model']
+            for display_name, info in settings.global_var.model_info.items():
+                if model_key(info[0]) == model_key(data_model) or model_key(info[1]) == model_key(data_model):
+                    data_model = display_name
+                    break
+            scheduler = metadata_dict.get('Schedule type', 'N/A')
+            distilled_cfg_scale = metadata_dict.get('Shift', metadata_dict.get('Distilled CFG Scale', 'N/A'))
 
             # Start building the copy_command
             copy_command = f'/draw prompt:{prompt}'
@@ -247,8 +264,12 @@ class MetaCog(commands.Cog):
                 copy_command += f' seed:{seed}'
             if clip_skip != "N/A":
                 copy_command += f' clip_skip:{clip_skip}'
-            #if data_model != "N/A":
-            #    copy_command += f' data_model:{data_model}'
+            if data_model != 'N/A':
+                copy_command += f' data_model:{data_model}'
+            if scheduler != 'N/A':
+                copy_command += f' scheduler:{scheduler}'
+            if distilled_cfg_scale != 'N/A':
+                copy_command += f' distilled_cfg_scale:{distilled_cfg_scale}'
 
             # Create the full Embed description from the extracted metadata
             full_extracted_metadata_str = f"🌟 **Model:** `{metadata_dict.get('Model', 'N/A')}`\n"
@@ -282,7 +303,7 @@ class MetaCog(commands.Cog):
             embed.set_footer(text=copy_command)
 
             # Create an instance of MetaView and pass the raw metadata
-            view = MetaView(ctx, metadata, prompt, negative_prompt, steps, sampler, cfg_scale, seed, size, clip_skip, data_model)
+            view = MetaView(ctx, metadata, prompt, negative_prompt, steps, sampler, cfg_scale, seed, size, clip_skip, data_model, scheduler, distilled_cfg_scale)
 
             # Add the view when you send the message
             await ctx.respond(content=f'<@{ctx.author.id}>', embed=embed, file=file, view=view)

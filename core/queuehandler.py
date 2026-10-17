@@ -12,13 +12,18 @@ import base64
 import contextlib
 
 from core import settings
+from copy import deepcopy
 
 
 # the queue object for txt2image and img2img
 class DrawObject:
     def __init__(self, cog, ctx, simple_prompt, prompt, negative_prompt, data_model, steps, width, height,
                  guidance_scale, sampler, seed, strength, init_image, batch, styles, highres_fix,
-                 clip_skip, extra_net, epoch_time, adetailer, scheduler, distilled_cfg_scale, view):# poseref, ipadapter
+                 clip_skip, extra_net, epoch_time, adetailer, scheduler, distilled_cfg_scale, model_profile=None, view=None):# poseref, ipadapter
+        # Accept the historical 22-field tuple followed by a view as well.
+        if view is None:
+            view, model_profile = model_profile, None
+        self.model_profile = deepcopy(model_profile)
         self.cog = cog
         self.ctx = ctx
         self.simple_prompt = simple_prompt
@@ -44,6 +49,11 @@ class DrawObject:
         self.clip_skip = clip_skip
         self.extra_net = extra_net
         self.epoch_time = epoch_time
+        if self.model_profile:
+            from core.model_profiles import update_snapshot, PARAMETERS
+            self.model_profile = update_snapshot(
+                self.model_profile, {name: getattr(self, name) for name in PARAMETERS},
+            )
         self.view = view
         self.user_id = ctx.author.id
         self.is_done = False

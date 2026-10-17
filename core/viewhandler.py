@@ -1,4 +1,6 @@
 import discord
+import asyncio
+from copy import deepcopy
 import random
 import re
 import os
@@ -8,6 +10,7 @@ from core import ctxmenuhandler
 from core import infocog
 from core import queuehandler
 from core import settings
+from core import model_profiles
 from core import stablecog
 from core import upscalecog
 from core.logging_setup import get_logger
@@ -41,6 +44,7 @@ input_tuple[0] = ctx
 [19] = adetailer
 [20] = scheduler
 [21] = distilled_cfg_scale
+[22] = model_profile (resolved Forge preset snapshot; optional on old messages)
 '''
 #[20] = poseref
 #[21] = ipadapter
@@ -76,6 +80,7 @@ def serialize_input_tuple(input_tuple):
         #'ipadapter': input_tuple[21],
         'scheduler': input_tuple[20],
         'distilled_cfg_scale': input_tuple[21],
+        'model_profile': deepcopy(input_tuple[22]) if len(input_tuple) > 22 else None,
 
     }
 
@@ -116,13 +121,15 @@ def deserialize_input_tuple(data):
         #data['poseref'],
         #data['ipadapter'],
         data['scheduler'],
-        data['distilled_cfg_scale']
+        data['distilled_cfg_scale'],
+        deepcopy(data.get('model_profile')),
     )
 
 class DrawModal(Modal):
     def __init__(self, input_tuple) -> None:
         super().__init__(title="Change Prompt!")
-        self.input_tuple = input_tuple
+        self.input_tuple = tuple(input_tuple) + (None,) if len(input_tuple) == 22 else input_tuple
+        input_tuple = self.input_tuple
         original_seed = input_tuple[10]
 
 
@@ -348,6 +355,30 @@ class DrawModal(Modal):
                     await infocog.InfoView.button_hyper(infocog_view, '', interaction)
                     return
 
+        # A model switch should not inherit unchanged XL sampling values.
+        # Only fields edited in the modal count as explicit overrides.
+        if not invalid_input and pen[4] != self.input_tuple[4]:
+            try:
+                profile = await asyncio.to_thread(
+                    stablecog.resolve_model_profile, pen[4],
+                    {name: pen[index] if str(pen[index]) != str(self.input_tuple[index]) else None
+                     for name, index in model_profiles.PARAMETER_INDICES.items()},
+                    settings.read(str(pen[0].channel.id)), 'i2i' if pen[12] is not None else 't2i',
+                )
+                pen[22] = profile
+                if profile:
+                    for name, index in model_profiles.PARAMETER_INDICES.items():
+                        pen[index] = profile['parameters'][name]
+                    pen[4] = profile['checkpoint']
+            except model_profiles.ProfileError as exc:
+                await interaction.response.send_message(f"Cannot configure this model: {exc}", ephemeral=True)
+                return
+        if pen[22]:
+            pen[22] = model_profiles.update_snapshot(
+                pen[22], {name: pen[index] for name, index in model_profiles.PARAMETER_INDICES.items()},
+            )
+        inherit_prompt_defaults = not pen[22] or pen[22]['inherit_prompt_defaults']
+
         # stop and give a useful message if any extended edit values aren't recognized
         if invalid_input:
             await interaction.response.send_message(embed=embed_err, ephemeral=True)
@@ -358,7 +389,7 @@ class DrawModal(Modal):
                     or settings.global_var.prompt_ignore_list
                     or settings.global_var.negative_prompt_prefix
                     or settings.global_var.prompt_prefix):
-                mod_results = settings.prompt_mod(self.children[0].value, self.children[1].value)
+                mod_results = settings.prompt_mod(self.children[0].value, self.children[1].value, apply_prompt_prefix=inherit_prompt_defaults)
                 if settings.global_var.prompt_ban_list and mod_results[0] == "Stop":
                     await interaction.response.send_message(f"I'm not allowed to draw the word {mod_results[1]}!", ephemeral=True)
                     return
@@ -378,7 +409,8 @@ class DrawModal(Modal):
             if pen[17] != 'None':
                 pen[2], pen[17], new_net_multi = settings.extra_net_check(pen[2], pen[17], net_multi)
             channel = '% s' % pen[0].channel.id
-            pen[2] = settings.extra_net_defaults(pen[2], channel)
+            if inherit_prompt_defaults:
+                pen[2] = settings.extra_net_defaults(pen[2], channel)
             # set batch to 1
             #if settings.global_var.batch_buttons == "False":
             #    pen[13] = [1, 1]
@@ -417,7 +449,7 @@ class DrawModal(Modal):
 class DrawView(View):
     def __init__(self, input_tuple):
         super().__init__(timeout=None)
-        self.input_tuple = input_tuple
+        self.input_tuple = tuple(input_tuple) + (None,) if isinstance(input_tuple, (tuple, list)) and len(input_tuple) == 22 else input_tuple
         if isinstance(self.input_tuple, tuple): # only check batch if we are actually a real view
             batch = input_tuple[13]
             batch_count = batch[0] * batch[1]

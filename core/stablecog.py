@@ -4,6 +4,7 @@ import base64
 import csv
 import discord
 import io
+import json
 import math
 import os
 import random
@@ -21,6 +22,7 @@ from typing import Optional, List
 from core import queuehandler
 from core import viewhandler
 from core import settings
+from core import model_profiles
 from core import autocomplete as ac
 from core.logging_setup import get_logger
 #from . import constants
@@ -96,6 +98,8 @@ def _detect_backend_from_env_or_url() -> SDBackend:
     if "sdnext" in url or "sd-next" in url:
         return SDBackend.SDNEXT
 
+    if getattr(settings.global_var, "forge_available", False):
+        return SDBackend.FORGE
     return SDBackend.AUTOMATIC
 
 
@@ -110,65 +114,36 @@ def get_sd_backend() -> SDBackend:
 
 
 def build_backend_options(queue_object, backend: SDBackend) -> dict:
-    """Construye el payload de /options específico para cada backend.
+    # Model loading belongs to the generation request's override_settings.
+    # Do not overwrite Forge presets with guessed module paths or UI options.
+    if backend is SDBackend.SDNEXT:
+        return {"img2img_extra_noise": 0.045}
+    return {}
 
-    - Para Forge: incluye las claves ``forge_*`` y ``img2img_extra_noise``.
-    - Para SD.Next: sólo toca opciones genéricas que existen también allí
-      (p.ej. ``img2img_extra_noise``) y evita las claves Forge.
-    - Para AUTOMATIC: por defecto no se tocan opciones adicionales para
-      minimizar sorpresas; si quieres afinarlas, hazlo vía configuración.
-    """
-    options: dict = {}
 
-    data_model = getattr(queue_object, "data_model", "") or ""
-    is_flux = "flux" in data_model.lower()
-
-    # Ajustes comunes seguros entre backends
-    if backend in {SDBackend.FORGE, SDBackend.SDNEXT}:
-        # ``img2img_extra_noise`` existe en A1111/SD.Next, pero por prudencia
-        # sólo lo tocamos cuando el backend está explícitamente configurado.
-        options["img2img_extra_noise"] = 0.015 if is_flux else 0.045
-
-    if backend is not SDBackend.FORGE:
-        # Nada más que hacer si no estamos en Forge.
-        return options
-
-    # A partir de aquí, claves específicas de Forge.
-    forge_preset = "flux" if is_flux else "xl"
-
-    if "nf4" in data_model.lower():
-        forge_unet_storage_dtype = "bnb-fp4 (fp16 LoRA)"
+def resolve_model_profile(checkpoint, explicit, channel, mode="t2i"):
+    """Run in a worker thread: authenticated reads may wake an offline backend."""
+    config = model_profiles.load_config()
+    backend = get_sd_backend()
+    forced = os.getenv("AIYA_SD_BACKEND", "").strip()
+    if forced and backend is not SDBackend.FORGE:
+        if model_profiles.model_config(config, checkpoint)['architecture'] == 'anima':
+            raise model_profiles.ProfileError("Anima profiles require Forge Neo")
+        return None
+    session = settings.authenticate_user()
+    if session is None:
+        data = model_profiles.catalog.cached(settings.global_var.url)
+        if data is None:
+            raise model_profiles.ProfileError("Could not authenticate with the image backend")
     else:
-        forge_unet_storage_dtype = "Automatic (fp16 LoRA)"
-
-    # Directorio de módulos: permitir override por variable de entorno.
-    default_modules_dir = (
-        "C:\\Users\\wizz\\stable-diffusion\\stable-diffusion-webui-forge\\models\\text_encoder\\"
-    )
-    modules_dir = os.getenv("AIYA_FORGE_MODULES_DIR", default_modules_dir)
-
-    modules_to_load = [
-        os.path.join(modules_dir, "ViT-L-14-REG-GATED-balanced-ckpt12.safetensors")
-    ]
-    if is_flux:
-        modules_to_load += [
-            os.path.join(modules_dir, "t5xxl_fp16.safetensors"),
-            os.path.join(modules_dir, "flux_vae.safetensors"),
-        ]
-    else:
-        modules_to_load += [
-            os.path.join(modules_dir, "sdxl_vae.safetensors"),
-        ]
-
-    options.update(
-        {
-            "forge_preset": forge_preset,
-            "forge_additional_modules": modules_to_load,
-            "forge_unet_storage_dtype": forge_unet_storage_dtype,
-        }
-    )
-
-    return options
+        with session:
+            data = model_profiles.catalog.read(session, settings.global_var.url)
+    settings.global_var.forge_available = data is not None
+    if data is None:
+        if backend is SDBackend.FORGE or model_profiles.model_config(config, checkpoint)['architecture'] == 'anima':
+            raise model_profiles.ProfileError("This backend does not expose Forge Neo presets")
+        return None
+    return model_profiles.resolve(data, config, checkpoint, explicit, channel, mode)
 
 
 def _filter_options_payload_for_backend(url: str, payload):
@@ -572,7 +547,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
     @option(
         'distilled_cfg_scale',
         str,
-        description='Distilled CFG Guidance scale.',
+        description='Shift for Anima; distilled CFG scale for other models.',
         required=False,
     )
     @option(
@@ -794,6 +769,39 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         channel = '% s' % ctx.channel.id
         settings.check(channel)
 
+        channel_defaults = settings.read(channel)
+        selected_model = data_model if data_model is not None else channel_defaults['data_model']
+        selected_model = settings.global_var.model_info.get(selected_model, (selected_model,))[0]
+        explicit_params = {
+            'steps': steps, 'width': width, 'height': height,
+            'guidance_scale': guidance_scale, 'distilled_cfg_scale': distilled_cfg_scale,
+            'sampler': sampler, 'scheduler': scheduler,
+        }
+        try:
+            model_profile = await asyncio.to_thread(
+                resolve_model_profile, selected_model, explicit_params, channel_defaults,
+                'i2i' if init_image is not None or init_url else 't2i',
+            )
+        except model_profiles.ProfileError as exc:
+            message = f"❌ Cannot configure this model: {exc}"
+            if is_interaction_context:
+                await ctx.followup.send(message, ephemeral=True)
+            else:
+                await ctx.channel.send(message)
+            return
+        inherit_prompt_defaults = not model_profile or model_profile['inherit_prompt_defaults']
+        if model_profile:
+            resolved = model_profile['parameters']
+            steps, width, height = resolved['steps'], resolved['width'], resolved['height']
+            guidance_scale = resolved['guidance_scale']
+            distilled_cfg_scale = resolved['distilled_cfg_scale']
+            sampler, scheduler = resolved['sampler'], resolved['scheduler']
+            if not inherit_prompt_defaults:
+                styles = styles if styles is not None else 'None'
+                clip_skip = clip_skip if clip_skip is not None else 1
+                highres_fix = highres_fix if highres_fix is not None else 'Disabled'
+                adetailer = adetailer if adetailer is not None else 'None'
+
         # Collect style and extra_net values into de-duplicated lists.
         style_list: List[str] = []
         if styles is not None:
@@ -834,11 +842,11 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
         # Apply default style only when the user did not provide any styles.
         default_style = settings.read(channel)['style']
-        if not style_list and default_style is not None:
+        if inherit_prompt_defaults and not style_list and default_style is not None:
             style_list.append(default_style)
 
         # Join styles for display/storage while keeping the list for backend use.
-        styles = ', '.join(style_list) if style_list else default_style
+        styles = ', '.join(style_list) if style_list else (default_style if inherit_prompt_defaults else 'None')
         if highres_fix is None:
             highres_fix = settings.read(channel)['highres_fix']
 
@@ -862,7 +870,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 or settings.global_var.prompt_ignore_list
                 or settings.global_var.negative_prompt_prefix
                 or settings.global_var.prompt_prefix):
-            mod_results = settings.prompt_mod(simple_prompt, negative_prompt)
+            mod_results = settings.prompt_mod(simple_prompt, negative_prompt, apply_prompt_prefix=inherit_prompt_defaults)
             if mod_results[0] == "Stop":
                 blocked_message = f"I'm not allowed to draw the word {mod_results[1]}!"
                 if is_interaction_context and ctx.interaction.response.is_done():
@@ -887,6 +895,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                     prompt = model[1][3] + " " + prompt
                 break
 
+        if model_profile:
+            data_model = model_profile['checkpoint']
+
         # Apply all selected extra networks to the prompt.
         net_multi_default = 0.85
         extra_net_multipliers: dict = {}
@@ -901,7 +912,8 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             extra_net_multipliers[cleaned_extra] = local_multi
 
         # Also append default hypernet / LoRA for the channel.
-        prompt = settings.extra_net_defaults(prompt, channel)
+        if inherit_prompt_defaults:
+            prompt = settings.extra_net_defaults(prompt, channel)
 
         # Build a compact representation of all extra nets for storage / display.
         if applied_extra_nets:
@@ -960,7 +972,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         if distilled_cfg_scale != settings.read(channel).get('distilled_cfg_scale', '3.5'):
             try:
                 distilled_cfg_scale = float(str(distilled_cfg_scale).replace(",", "."))
-                reply_adds += f'\nDistilled CFG Scale: ``{distilled_cfg_scale}``'
+                reply_adds += f'\n{model_profiles.shift_label(model_profile)}: ``{distilled_cfg_scale}``'
             except Exception:
                 reply_adds += f"\nDistilled CFG Scale can't be ``{distilled_cfg_scale}``! Setting to default of `3.5`."
                 distilled_cfg_scale = 3.5
@@ -1033,12 +1045,19 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
 
 
+        if model_profile:
+            model_profile['parameters'].update(
+                steps=steps, width=width, height=height, guidance_scale=guidance_scale,
+                distilled_cfg_scale=distilled_cfg_scale, sampler=sampler, scheduler=scheduler,
+            )
+            reply_adds += f"\nArchitecture: ``{model_profile['architecture']}``"
+
         epoch_time = int(time.time())
 
         # set up tuple of parameters to pass into the Discord view
         input_tuple = (
             ctx, simple_prompt, prompt, negative_prompt, data_model, steps, width, height, guidance_scale, sampler, seed, strength,
-            init_image, batch, styles, highres_fix, clip_skip, extra_net, epoch_time, adetailer, scheduler, distilled_cfg_scale)# poseref, ipadapter
+            init_image, batch, styles, highres_fix, clip_skip, extra_net, epoch_time, adetailer, scheduler, distilled_cfg_scale, model_profile)# poseref, ipadapter
         logger.info(
             "/draw normalized params: steps=%s size=%sx%s guidance_scale=%s distilled_cfg_scale=%s sampler=%s scheduler=%s seed=%s strength=%s styles=%s adetailer=%s clip_skip=%s batch=%s extra_net=%s has_init_image=%s",
             steps,
@@ -1333,6 +1352,23 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 queue_object.is_done = True
                 return
 
+            if queue_object.model_profile is None:
+                queue_object.model_profile = resolve_model_profile(
+                    queue_object.data_model,
+                    {name: getattr(queue_object, name) for name in model_profiles.PARAMETERS},
+                    settings.read(channel), 'i2i' if queue_object.init_image is not None else 't2i',
+                )
+            model_profile = queue_object.model_profile
+            if model_profile:
+                queue_object.data_model = model_profile['checkpoint']
+                if len(queue_object.view.input_tuple) == 22:
+                    queue_object.view.input_tuple = (*queue_object.view.input_tuple, None)
+                if queue_object.view.input_tuple[22] is None:
+                    from copy import deepcopy
+                    replay = list(queue_object.view.input_tuple)
+                    replay[4], replay[22] = model_profile['checkpoint'], deepcopy(model_profile)
+                    queue_object.view.input_tuple = tuple(replay)
+
             # construct a payload for data model, then the normal payload
             model_payload = {
                 "sd_model_checkpoint": queue_object.data_model
@@ -1347,7 +1383,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             # Normalize styles into a list for the backend.
             styles_payload: List[str] = []
             if isinstance(queue_object.styles, str):
-                styles_payload = [s.strip() for s in queue_object.styles.split(",") if s.strip()]
+                styles_payload = [s.strip() for s in queue_object.styles.split(",") if s.strip() and s.strip() != "None"]
             elif isinstance(queue_object.styles, (list, tuple, set)):
                 styles_payload = [str(s).strip() for s in queue_object.styles if str(s).strip()]
 
@@ -1414,6 +1450,23 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
             # add any options that would go into the override_settings
             override_settings = {"CLIP_stop_at_last_layers": queue_object.clip_skip}
+            if model_profile:
+                payload.update(model_profiles.generation_settings(model_profile))
+                override_settings.update(payload['override_settings'])
+                if model_profile['architecture'] == 'anima':
+                    override_settings.pop('CLIP_stop_at_last_layers', None)
+                payload['override_settings_restore_afterwards'] = True
+                if queue_object.highres_fix != 'Disabled':
+                    payload.update(model_profile['hires'])
+                    payload['hr_sampler_name'] = queue_object.sampler
+                    payload['hr_scheduler'] = queue_object.scheduler
+                    # Forge defaults to a 64 pixel resolution step.
+                    for dim in ('width', 'height'):
+                        rounded = max(64, round(getattr(queue_object, dim) / 64) * 64)
+                        setattr(queue_object, dim, rounded)
+                    payload['hr_resize_x'] = queue_object.width
+                    payload['hr_resize_y'] = queue_object.height
+                    payload['hr_additional_modules'] = ['Use same choices']
 
             alwayson_scripts_settings = {}
             
@@ -1526,9 +1579,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             }
             payload.update(alwayson_scripts_payload)
 
-            if queue_object.data_model != '':
+            if queue_object.data_model != '' and model_profile is None:
                 try:
-                    s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=model_payload)
+                    s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=model_payload).raise_for_status()
                 except requests.exceptions.ConnectionError:
                     logger.error("Connection error. No response from API while setting model option.")
                     error_msg = "❌ Error de conexión con la Web UI. Verifica que esté ejecutándose."
@@ -1545,7 +1598,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             backend_options_payload = build_backend_options(queue_object, backend)
             if backend_options_payload:
                 try:
-                    s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=backend_options_payload)
+                    s.post(url=f'{settings.global_var.url}/sdapi/v1/options', json=backend_options_payload).raise_for_status()
                 except requests.exceptions.ConnectionError:
                     logger.error("Connection error. No response from API while setting backend options.")
                     error_msg = "❌ Error de conexión al configurar opciones del backend. Verifica que la Web UI esté ejecutándose."
@@ -1584,6 +1637,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                     return
 
             try:
+                response.raise_for_status()
                 response_data = response.json()
             except Exception as e:
                 error_msg = f"❌ Error on Web UI: {e}"
@@ -1670,6 +1724,8 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
                 metadata = PngImagePlugin.PngInfo()
                 metadata.add_text("parameters", png_response.json().get("info"))
+                if model_profile:
+                    metadata.add_text("aiya_profile", json.dumps(model_profile))
                 str_parameters = png_response.json().get("info")
 
                 file_path = f'{settings.global_var.dir}/{epoch_time}-{queue_object.seed}-{count}.png'
@@ -1754,7 +1810,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                         id_start = current_grid * grid_count + 1
                         id_end = id_start + last_grid_count - 1
                     filename=f'{queue_object.seed}-{current_grid}.png'
-                    file = add_metadata_to_image(grid,images[current_grid * 25][2], filename)
+                    file = add_metadata_to_image(grid,images[current_grid * 25][2], filename, model_profile)
                     if current_grid == 0:
                         content = f'<@{queue_object.ctx.author.id}>, {message}\n Batch ID: {epoch_time}-{queue_object.seed}\n Image IDs: {id_start}-{id_end}'
                     else:
@@ -1775,7 +1831,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 #    image = image.resize((int(queue_object.width * 0.75), int(queue_object.height * 0.75)))
                 #    image = apply_color_correction(image)
                 filename = f'{queue_object.seed}-{count}.png'
-                file = add_metadata_to_image(image, str_parameters, filename)
+                file = add_metadata_to_image(image, str_parameters, filename, model_profile)
                 queuehandler.process_post(
                     self, queuehandler.PostObject(
                         self, queue_object.ctx, content=content, file=file, embed='', view=view))
@@ -1799,11 +1855,13 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 def setup(bot):
     bot.add_cog(StableCog(bot))
 
-def add_metadata_to_image(image, str_parameters, filename):
+def add_metadata_to_image(image, str_parameters, filename, model_profile=None):
     with io.BytesIO() as buffer:
         # setup metadata
         metadata = PngImagePlugin.PngInfo()
         metadata.add_text("parameters", str_parameters)
+        if model_profile:
+            metadata.add_text("aiya_profile", json.dumps(model_profile))
         # save image to buffer
         image.save(buffer, 'PNG', pnginfo=metadata)
 

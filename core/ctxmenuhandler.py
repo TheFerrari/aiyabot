@@ -103,6 +103,7 @@ async def parse_image_info(ctx, image_url, command, init_url=None):
             prompt_field = style_remove(style[1][0], prompt_field)
             negative_prompt = style_remove(style[1][1], negative_prompt)
 
+        shift_name = 'Distilled CFG Scale'
         # grab parameters
         extra_params_split = png_data_list[2].split(", ")
         for line in extra_params_split:
@@ -116,12 +117,15 @@ async def parse_image_info(ctx, image_url, command, init_url=None):
                 size = line.split(': ', 1)[1]
             if 'CFG scale: ' in line:
                 guidance_scale = line.split(': ', 1)[1]
+            if line.startswith('Shift: '):
+                distilled_cfg_scale = line.split(': ', 1)[1]
+                shift_name = 'Shift'
             if 'Distilled CFG Scale: ' in line:
                 distilled_cfg_scale = line.split(': ', 1)[1]
             if 'Sampler: ' in line:
                 sampler = line.split(': ', 1)[1]
             if 'Schedule type: ' in line:
-                scheduler = line.split(': ', 1)[1].lower()
+                scheduler = line.split(': ', 1)[1]
             if 'Seed: ' in line:
                 seed = line.split(': ', 1)[1]
             if 'ADetailer: ' in line:
@@ -189,7 +193,7 @@ async def parse_image_info(ctx, image_url, command, init_url=None):
             embed.add_field(name=f'Negative prompt', value=f'``{n_prompt_field}``', inline=False)
 
         extra_params = f'Sampling steps: ``{steps}``\nSize: ``{size}``\nClassifier-free guidance scale: ' \
-                       f'``{guidance_scale}``\nDistilled CFG Scale: ``{distilled_cfg_scale}``\nSampler: ``{sampler}``\nScheduler: ``{scheduler}``\nSeed: ``{seed}``'
+                       f'``{guidance_scale}``\nSampler: ``{sampler}``\nScheduler: ``{scheduler}``\nSeed: ``{seed}``'
 
         if style:
             copy_command += f' styles:{style[0]}'
@@ -205,7 +209,7 @@ async def parse_image_info(ctx, image_url, command, init_url=None):
             extra_params += f'\nCLIP skip: ``{clip_skip}``'
         if distilled_cfg_scale:
             copy_command += f' distilled_cfg_scale:{distilled_cfg_scale}'
-            extra_params += f'\nDistilled CFG Scale: ``{distilled_cfg_scale}``'
+            extra_params += f'\n{shift_name}: ``{distilled_cfg_scale}``'
 
         embed.add_field(name=f'Other parameters', value=extra_params, inline=False)
 
