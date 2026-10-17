@@ -274,3 +274,9 @@ These people played a large role in AIYA's development in some way:
 - gingivere0, for PayloadFormatter class for the original API. Without that, I'd have given up from the start. Also has a great Discord bot as a no-slash-command alternative.
   - https://github.com/gingivere0/dalebot
 - You, for using AIYA and contributing with PRs, bug reports, feedback, and more!
+
+### Forge Neo: SDXL and Anima
+
+AIYA supports checkpoint profiles that read Forge Neo's saved presets and send
+model components with each generation. See [Forge model profiles](FORGE_MODEL_PROFILES.md)
+for configuration, parameter precedence, regeneration, and validation.
